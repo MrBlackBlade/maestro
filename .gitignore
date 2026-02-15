@@ -1,0 +1,12 @@
+# Data
+datasets/
+*.h5
+*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
