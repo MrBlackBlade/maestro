@@ -1,5 +1,5 @@
 # Data
-!datasets/.gitkeep
+!datasets/
 datasets/*
 *.h5
 *.json
