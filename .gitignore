@@ -1,6 +1,6 @@
 # Data
-!datasets/
 datasets/*
+!datasets/.gitkeep
 *.h5
 *.json
 
