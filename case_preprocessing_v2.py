@@ -7,7 +7,7 @@ from typing import List, Tuple
 from sklearn.preprocessing import StandardScaler
 
 # Configuration
-DATA_DIR = "E:/Gam3a/Grad-proj"
+DATA_DIR = "datasets"
 CASE_DIR = f"{DATA_DIR}/CASE_full"
 CASE_DATA_PATH = f"{CASE_DIR}/data/interpolated/physiological"
 CASE_ANNOTATION_PATH = f"{CASE_DIR}/data/interpolated/annotations"
