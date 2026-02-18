@@ -1,0 +1,10 @@
+torch>=2.0
+miditok>=3.0.1
+symusic>=0.5.0
+numpy
+pandas
+tqdm
+streamlit
+midi2audio
+scipy
+

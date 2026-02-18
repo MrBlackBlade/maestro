@@ -11,3 +11,6 @@ __pycache__/
 *.pyd
 *.pyw
 *.pyz
+
+# Ignore the large tokenized dataset folder
+music-generator-test/data/tokenized/
