@@ -10,11 +10,10 @@ class Config:
     # ========================
     # Paths
     # ========================
-    # Absolute path to the XMIDI dataset folder (flat directory of .midi files)
-    XMIDI_DATASET_DIR = Path(r"E:\Gam3a\Grad-proj\XMIDI_Dataset")
-
     # Project-relative paths
     PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    
+    XMIDI_DATASET_DIR = PROJECT_ROOT / "datasets" / "XMIDI_Dataset"
     DATA_DIR = PROJECT_ROOT / "data"
     METADATA_CSV = DATA_DIR / "metadata.csv"
     TOKENIZER_PARAMS_PATH = DATA_DIR / "tokenizer.json"
@@ -91,4 +90,3 @@ class Config:
     # Device
     # ========================
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-

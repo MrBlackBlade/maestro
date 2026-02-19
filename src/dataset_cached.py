@@ -10,7 +10,7 @@ import torch
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 
-from src.config import Config
+from config import Config
 
 
 class CachedXmidiDataset(Dataset):

@@ -24,7 +24,7 @@ from tqdm import tqdm
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from src.config import Config
+from config import Config
 from src.utils import get_tokenizer, save_mappings
 
 

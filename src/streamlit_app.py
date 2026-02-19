@@ -1,15 +1,3 @@
-"""
-Streamlit App – XMIDI Live Music Studio
-
-Combines the trained Generator and Refiner models to produce music from
-user-selected Mood and Genre.  Outputs a downloadable MIDI file and,
-if FluidSynth is installed, plays the audio in the browser.
-
-Usage
------
-    cd music-generator-test
-    streamlit run app.py
-"""
 import sys
 import os
 import tempfile
@@ -22,10 +10,10 @@ import torch.nn.functional as F
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from src.config import Config
-from src.model_generator import MusicGenerator
-from src.model_refiner import LevenshteinRefiner
-from src.utils import get_tokenizer
+from config import Config
+from model_generator import MusicGenerator
+from model_refiner import LevenshteinRefiner
+from utils import get_tokenizer
 
 # ======================================================================
 # Page config
@@ -86,11 +74,28 @@ def load_tokenizer():
 # ======================================================================
 # Sampling helpers
 # ======================================================================
-def top_k_top_p_sample(logits: torch.Tensor, top_k: int, top_p: float, temperature: float):
+def top_k_top_p_sample(logits: torch.Tensor, top_k: int, top_p: float, temperature: float, vocab_size: int):
     """
     Apply temperature scaling, top-k, and nucleus (top-p) filtering,
     then sample a single token.
+    
+    Parameters
+    ----------
+    logits : torch.Tensor [B, vocab_size]
+        Raw logits from the model
+    top_k : int
+        Top-k sampling parameter
+    top_p : float
+        Nucleus sampling parameter
+    temperature : float
+        Temperature scaling
+    vocab_size : int
+        Valid vocabulary size (to clamp logits)
     """
+    # Clamp logits to valid vocabulary range
+    if logits.size(-1) > vocab_size:
+        logits = logits[:, :vocab_size]
+    
     logits = logits / max(temperature, 1e-8)
 
     # Top-k
@@ -107,8 +112,8 @@ def top_k_top_p_sample(logits: torch.Tensor, top_k: int, top_p: float, temperatu
         # Remove tokens with cumulative prob above threshold
         sorted_mask = cumulative_probs - F.softmax(sorted_logits, dim=-1) >= top_p
         sorted_logits[sorted_mask] = -float("inf")
-        # Scatter back
-        logits = sorted_logits.scatter(1, sorted_indices, sorted_logits)
+        # Scatter back to original positions
+        logits = torch.zeros_like(logits).scatter(1, sorted_indices, sorted_logits)
 
     probs = F.softmax(logits, dim=-1)
     next_token = torch.multinomial(probs, num_samples=1)
@@ -166,6 +171,31 @@ if generate_btn:
         )
         st.stop()
 
+    # Get actual tokenizer vocabulary size
+    tokenizer_vocab_size = len(tokenizer)
+    model_vocab_size = gen_model.vocab_size
+    
+    # Diagnostic: Check if there's a mismatch and explain why
+    if model_vocab_size != tokenizer_vocab_size:
+        st.warning(
+            f"⚠️ Vocabulary size mismatch detected!\n\n"
+            f"**Model vocab_size:** {model_vocab_size}\n"
+            f"**Tokenizer vocab_size:** {tokenizer_vocab_size}\n\n"
+            f"**Why this happens:**\n"
+            f"- The model was trained with vocab_size={model_vocab_size} and outputs logits for indices [0, {model_vocab_size-1}]\n"
+            f"- The tokenizer currently has {tokenizer_vocab_size} tokens\n"
+            f"- During sampling, we might sample indices >= {tokenizer_vocab_size} which don't exist in the tokenizer\n\n"
+            f"**Possible causes:**\n"
+            f"1. Tokenizer was retrained/modified after model training\n"
+            f"2. Different tokenizer file is being loaded than the one used during training\n"
+            f"3. Tokenizer vocabulary changed (e.g., special tokens added/removed)\n\n"
+            f"**Solution:** Clamping logits to tokenizer size to prevent decode errors."
+        )
+    else:
+        # Even if sizes match, we should still validate token IDs are in valid range
+        # because MidiTok might have gaps or non-contiguous token IDs
+        st.info(f"✓ Vocabulary sizes match: {model_vocab_size} tokens")
+
     # ---- 1. GENERATE DRAFT ----
     st.subheader("1️⃣ Generating draft...")
     progress = st.progress(0)
@@ -175,7 +205,9 @@ if generate_btn:
     g_id = torch.tensor([genre_id], device=DEVICE)
 
     # Start with BOS token (id=1 in most tokenizers, fallback to 1)
-    bos_id = tokenizer.special_tokens_ids.get("BOS", 1) if hasattr(tokenizer, "special_tokens_ids") else 1
+    bos_id = tokenizer.special_tokens_ids[1] if hasattr(tokenizer, "special_tokens_ids") else 1
+    # Ensure BOS token is valid
+    bos_id = min(bos_id, tokenizer_vocab_size - 1)
     sequence = torch.tensor([[bos_id]], dtype=torch.long, device=DEVICE)
 
     with torch.no_grad():
@@ -184,7 +216,9 @@ if generate_btn:
             ctx = sequence[:, -Config.MAX_SEQ_LEN :]
             logits = gen_model(ctx, m_id, g_id)
             next_logits = logits[:, -1, :]  # last position
-            next_token = top_k_top_p_sample(next_logits, top_k, top_p, temperature)
+            next_token = top_k_top_p_sample(next_logits, top_k, top_p, temperature, tokenizer_vocab_size)
+            # Clamp token to valid range
+            next_token = torch.clamp(next_token, 0, tokenizer_vocab_size - 1)
             sequence = torch.cat([sequence, next_token], dim=1)
 
             if (i + 1) % 10 == 0 or i == generate_length - 1:
@@ -192,6 +226,8 @@ if generate_btn:
                 status_text.text(f"Generated {i + 1}/{generate_length} tokens")
 
     draft_ids = sequence[0].cpu().tolist()
+    # Validate all token IDs are in valid range
+    draft_ids = [min(max(tid, 0), tokenizer_vocab_size - 1) for tid in draft_ids]
     status_text.text(f"Draft complete: {len(draft_ids)} tokens")
 
     # ---- 2. REFINE (optional) ----
@@ -201,10 +237,17 @@ if generate_btn:
         with torch.no_grad():
             for p in range(refiner_passes):
                 del_logits, tok_logits = ref_model(refined, m_id, g_id)
+                # Clamp logits to valid vocabulary size
+                if tok_logits.size(-1) > tokenizer_vocab_size:
+                    tok_logits = tok_logits[:, :, :tokenizer_vocab_size]
                 # Replace every position with the refiner's top prediction
                 refined = torch.argmax(tok_logits, dim=-1)  # [B, S]
+                # Clamp to valid range
+                refined = torch.clamp(refined, 0, tokenizer_vocab_size - 1)
                 st.text(f"  Refiner pass {p + 1}/{refiner_passes} done")
         final_ids = refined[0].cpu().tolist()
+        # Validate all token IDs are in valid range
+        final_ids = [min(max(tid, 0), tokenizer_vocab_size - 1) for tid in final_ids]
     else:
         final_ids = draft_ids
         if use_refiner and ref_model is None:
@@ -213,9 +256,23 @@ if generate_btn:
     # ---- 3. CONVERT TO MIDI & PLAY ----
     st.subheader("3️⃣ Your AI Composition")
 
+    # Validate token IDs before decoding
+    invalid_ids = [tid for tid in final_ids if tid < 0 or tid >= tokenizer_vocab_size]
+    if invalid_ids:
+        st.error(
+            f"❌ Invalid token IDs detected: {len(invalid_ids)} out of {len(final_ids)} tokens "
+            f"are outside valid range [0, {tokenizer_vocab_size - 1}]. "
+            f"First few invalid IDs: {invalid_ids[:10]}"
+        )
+        # Filter out invalid IDs (replace with a safe token)
+        # Use BOS token if available and valid, otherwise use token 0 (PAD)
+        safe_token = bos_id if 0 <= bos_id < tokenizer_vocab_size else 0
+        final_ids = [tid if 0 <= tid < tokenizer_vocab_size else safe_token for tid in final_ids]
+        st.warning(f"Replaced {len(invalid_ids)} invalid token IDs with safe token {safe_token}")
+
     # Decode tokens back to MIDI
     try:
-        midi_obj = tokenizer.decode(final_ids)
+        midi_obj = tokenizer(final_ids)
         with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as tmp:
             midi_path = tmp.name
             midi_obj.dump_midi(midi_path)
@@ -236,8 +293,8 @@ if generate_btn:
 
             # Common soundfont locations
             sf_candidates = [
-                Path(__file__).parent / "FluidR3_GM.sf2",
-                Path(__file__).parent / "soundfont.sf2",
+                Path(__file__).parent / "soundfonts" / "FluidR3_GM.sf2",
+                Path(__file__).parent / "soundfonts" / "soundfont.sf2",
                 Path(r"C:\soundfonts\FluidR3_GM.sf2"),
             ]
             sf_path = None

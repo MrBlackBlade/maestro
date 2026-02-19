@@ -8,7 +8,7 @@ from pathlib import Path
 from miditok import REMI, TokenizerConfig
 from symusic import Score
 
-from src.config import Config
+from config import Config
 
 
 def get_tokenizer(trained_path: str | Path | None = None) -> REMI:

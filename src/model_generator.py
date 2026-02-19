@@ -15,7 +15,7 @@ import math
 import torch
 import torch.nn as nn
 
-from src.config import Config
+from config import Config
 
 
 class MusicGenerator(nn.Module):

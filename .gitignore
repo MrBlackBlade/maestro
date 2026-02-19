@@ -13,4 +13,8 @@ __pycache__/
 *.pyz
 
 # Ignore the large tokenized dataset folder
-music-generator-test/data/tokenized/
+data/tokenized/*
+
+# Keep the best model checkpoints, but ignore the rest of the models
+models/generator/*
+models/refiner/*

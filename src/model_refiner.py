@@ -22,7 +22,7 @@ Architecture
 import torch
 import torch.nn as nn
 
-from src.config import Config
+from config import Config
 
 
 class LevenshteinRefiner(nn.Module):

@@ -22,7 +22,7 @@ from tqdm import tqdm
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from src.config import Config
+from config import Config
 from src.dataset_cached import get_cached_dataloader
 from src.model_generator import MusicGenerator
 from src.utils import get_tokenizer

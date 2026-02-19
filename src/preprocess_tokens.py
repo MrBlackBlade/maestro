@@ -22,7 +22,7 @@ import pandas as pd
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from src.config import Config
+from config import Config
 from src.utils import get_tokenizer
 from src.dataset import suppress_stdout_stderr
 from symusic import Score

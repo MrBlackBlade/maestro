@@ -12,7 +12,7 @@ from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 from symusic import Score
 
-from src.config import Config
+from config import Config
 from src.utils import get_tokenizer
 
 
