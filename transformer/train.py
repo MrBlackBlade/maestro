@@ -192,10 +192,11 @@ class Trainer:
         avg_loss = total_loss / max(num_batches, 1)
         return avg_loss
 
-    def save_checkpoint(self, epoch: int, is_best: bool = False):
+    def save_checkpoint(self, epoch: int, val_loss: float, is_best: bool = False):
         """Save model checkpoint."""
         checkpoint = {
             "epoch": epoch,
+            "val_loss": val_loss,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
@@ -213,9 +214,9 @@ class Trainer:
             "train_history": self.train_history,
         }
 
-        # Save latest
-        latest_path = self.cfg.paths.checkpoint_dir / "latest_checkpoint.pt"
-        torch.save(checkpoint, latest_path)
+        # Save per-epoch checkpoint
+        epoch_path = self.cfg.paths.checkpoint_dir / f"checkpoint_epoch_{epoch:03d}_loss{val_loss:.4f}.pt"
+        torch.save(checkpoint, epoch_path)
 
         # Save best
         if is_best:
@@ -264,7 +265,7 @@ class Trainer:
                 self.patience_counter += 1
 
             # Save checkpoint
-            self.save_checkpoint(epoch, is_best)
+            self.save_checkpoint(epoch, val_loss, is_best)
 
             # Log
             print(
