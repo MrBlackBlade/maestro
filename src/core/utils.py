@@ -3,13 +3,29 @@ Shared utilities: tokenizer creation, token encode/decode helpers.
 Both the Generator and Refiner use the same tokenizer so they share a vocabulary.
 """
 import json
+import os
+import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from miditok import REMI, TokenizerConfig
 from symusic import Score
 
-from config import Config
+from src.core.config import Config
 
+@contextmanager
+def suppress_stdout_stderr():
+    """Context manager to suppress stdout/stderr (for suppressing C++ library debug output)."""
+    with open(os.devnull, 'w') as devnull:
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        try:
+            sys.stdout = devnull
+            sys.stderr = devnull
+            yield
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
 
 def get_tokenizer(trained_path: str | Path | None = None) -> REMI:
     """
@@ -25,10 +41,10 @@ def get_tokenizer(trained_path: str | Path | None = None) -> REMI:
         return tokenizer
 
     config = TokenizerConfig(
-        pitch_range=Config.PITCH_RANGE,
         num_velocities=Config.NUM_VELOCITIES,
         use_chords=Config.USE_CHORDS,
         use_programs=Config.USE_PROGRAMS,
+        one_token_stream_for_programs=True,
     )
     tokenizer = REMI(config)
     return tokenizer

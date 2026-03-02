@@ -1,5 +1,5 @@
 """
-Cached Dataset – Loads pre-tokenized sequences from .npy files.
+Cached Dataset - Loads pre-tokenized sequences from .npy files.
 
 This is MUCH faster than tokenizing MIDI files on-the-fly during training.
 Use this after running 0_preprocess_tokens.py.
@@ -10,7 +10,7 @@ import torch
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 
-from config import Config
+from src.core.config import Config
 
 
 class CachedXmidiDataset(Dataset):
@@ -18,9 +18,9 @@ class CachedXmidiDataset(Dataset):
     Fast dataset that loads pre-tokenized sequences from .npy files.
     
     Each sample returns:
-        tokens  – LongTensor  [SEQ_LEN]     (REMI token ids)
-        mood_id – LongTensor  scalar         (mood category)
-        genre_id– LongTensor  scalar         (genre category)
+        tokens  - LongTensor  [SEQ_LEN]     (REMI token ids)
+        mood_id - LongTensor  scalar         (mood category)
+        genre_id- LongTensor  scalar         (genre category)
     """
 
     def __init__(

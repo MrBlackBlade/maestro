@@ -1,5 +1,5 @@
 """
-Music Refiner – Levenshtein Transformer (Non-Autoregressive).
+Music Refiner - Levenshtein Transformer (Non-Autoregressive).
 
 Takes a "draft" token sequence (from the Generator) and **edits** it in
 parallel: it can *delete* bad tokens and *replace* tokens to make the
@@ -15,8 +15,8 @@ Architecture
 ------------
 * Bidirectional Transformer **Encoder** (sees the full corrupted sequence).
 * Two output heads:
-    - **Deletion head** – binary classifier per token (keep / delete).
-    - **Token head**    – predicts the correct token at each position
+    - **Deletion head** - binary classifier per token (keep / delete).
+    - **Token head**    - predicts the correct token at each position
                           (replacement / reconstruction).
 """
 import torch
@@ -86,14 +86,14 @@ class LevenshteinRefiner(nn.Module):
         """
         Parameters
         ----------
-        x        : LongTensor  [B, S]   – (possibly corrupted) token ids
+        x        : LongTensor  [B, S]   - (possibly corrupted) token ids
         mood_id  : LongTensor  [B]
         genre_id : LongTensor  [B]
 
         Returns
         -------
-        del_logits : FloatTensor [B, S, 2]           – keep/delete per token
-        tok_logits : FloatTensor [B, S, vocab_size]   – replacement prediction
+        del_logits : FloatTensor [B, S, 2]           - keep/delete per token
+        tok_logits : FloatTensor [B, S, vocab_size]   - replacement prediction
         """
         B, S = x.shape
         device = x.device
@@ -107,7 +107,7 @@ class LevenshteinRefiner(nn.Module):
         h = self.emb_norm(h)
         h = self.drop(h)
 
-        # 2. Bidirectional encoding (no causal mask – sees everything)
+        # 2. Bidirectional encoding (no causal mask - sees everything)
         # Create a padding mask: positions where x == 0 are padding
         padding_mask = (x == 0)  # [B, S], True where padded
         latent = self.encoder(h, src_key_padding_mask=padding_mask)

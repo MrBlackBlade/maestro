@@ -1,13 +1,13 @@
 """
-Step 3 – Train the Levenshtein Refiner (Non-Autoregressive Denoising Model).
+Step 3 - Train the Levenshtein Refiner (Non-Autoregressive Denoising Model).
 
 Training strategy
 -----------------
 1. Take a **clean** XMIDI token sequence (the "ground truth").
 2. **Corrupt** it by randomly replacing a fraction of tokens with random ids.
 3. Ask the Refiner to:
-   a) Predict which tokens were corrupted  (Deletion head – binary CE).
-   b) Reconstruct the original token       (Token head   – CE on all positions).
+   a) Predict which tokens were corrupted  (Deletion head - binary CE).
+   b) Reconstruct the original token       (Token head   - CE on all positions).
 
 This teaches the model to "fix" low-quality or incoherent music.
 
@@ -45,8 +45,8 @@ def corrupt_sequence(
 
     Returns
     -------
-    corrupted : LongTensor [B, S]  – the noisy version
-    is_noisy  : LongTensor [B, S]  – binary label (1 where corrupted)
+    corrupted : LongTensor [B, S]  - the noisy version
+    is_noisy  : LongTensor [B, S]  - binary label (1 where corrupted)
     """
     corrupted = tokens.clone()
     # Only corrupt non-padding positions

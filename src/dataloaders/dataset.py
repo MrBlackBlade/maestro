@@ -12,31 +12,16 @@ from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 from symusic import Score
 
-from config import Config
-from src.utils import get_tokenizer
-
-
-@contextmanager
-def suppress_stdout_stderr():
-    """Context manager to suppress stdout/stderr (for suppressing C++ library debug output)."""
-    with open(os.devnull, 'w') as devnull:
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        try:
-            sys.stdout = devnull
-            sys.stderr = devnull
-            yield
-        finally:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
+from src.core.config import Config
+from src.core.utils import get_tokenizer, suppress_stdout_stderr
 
 
 class XmidiDataset(Dataset):
     """
     Each sample returns:
-        tokens  – LongTensor  [SEQ_LEN]     (REMI token ids)
-        mood_id – LongTensor  scalar         (mood category)
-        genre_id– LongTensor  scalar         (genre category)
+        tokens  - LongTensor  [SEQ_LEN]     (REMI token ids)
+        mood_id - LongTensor  scalar         (mood category)
+        genre_id- LongTensor  scalar         (genre category)
     """
 
     def __init__(

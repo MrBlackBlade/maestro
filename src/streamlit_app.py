@@ -8,12 +8,12 @@ import torch
 import torch.nn.functional as F
 
 # Ensure project root is importable
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from config import Config
-from model_generator import MusicGenerator
-from model_refiner import LevenshteinRefiner
-from utils import get_tokenizer
+from src.core.config import Config
+from src.models.model_generator import MusicGenerator
+from src.models.model_refiner import LevenshteinRefiner
+from src.core.utils import get_tokenizer
 
 # ======================================================================
 # Page config
@@ -251,7 +251,7 @@ if generate_btn:
     else:
         final_ids = draft_ids
         if use_refiner and ref_model is None:
-            st.warning("Refiner checkpoint not found – skipping refinement.")
+            st.warning("Refiner checkpoint not found - skipping refinement.")
 
     # ---- 3. CONVERT TO MIDI & PLAY ----
     st.subheader("3️⃣ Your AI Composition")

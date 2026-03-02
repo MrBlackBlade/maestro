@@ -1,5 +1,5 @@
 """
-Step 2 – Train the Music Generator (Autoregressive Transformer).
+Step 2 - Train the Music Generator (Autoregressive Transformer).
 
 The model learns: "Given this sequence of MIDI tokens + a Mood + a Genre,
 what is the most likely *next* token?"

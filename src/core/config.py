@@ -11,9 +11,11 @@ class Config:
     # Paths
     # ========================
     # Project-relative paths
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+    DATASETS_DIR = PROJECT_ROOT / "datasets"
+    XMIDI_DATASET_DIR = DATASETS_DIR / "XMIDI_Dataset"
     
-    XMIDI_DATASET_DIR = PROJECT_ROOT / "datasets" / "XMIDI_Dataset"
     DATA_DIR = PROJECT_ROOT / "data"
     METADATA_CSV = DATA_DIR / "metadata.csv"
     TOKENIZER_PARAMS_PATH = DATA_DIR / "tokenizer.json"
@@ -42,10 +44,10 @@ class Config:
     # ========================
     # Tokenizer
     # ========================
-    PITCH_RANGE = (21, 108)          # Standard piano range
-    NUM_VELOCITIES = 16              # Quantized velocity bins
+    PITCH_RANGE = (21, 108)             # Standard piano range
+    NUM_VELOCITIES = 8                  # How many volume levels to track
     USE_CHORDS = True
-    USE_PROGRAMS = False             # Single-track MIDI, no program tokens needed
+    USE_PROGRAMS = True                 # Single-track MIDI, no program tokens needed
 
     # ========================
     # Model Hyperparameters

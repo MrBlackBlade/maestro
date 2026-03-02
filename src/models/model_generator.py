@@ -1,5 +1,5 @@
 """
-Music Generator – Autoregressive Decoder-only Transformer (GPT-style).
+Music Generator - Autoregressive Decoder-only Transformer (GPT-style).
 
 Conditioned on discrete **Mood** and **Genre** embeddings which are added to
 every token embedding so the model always "knows" the requested style.
@@ -91,9 +91,9 @@ class MusicGenerator(nn.Module):
         """
         Parameters
         ----------
-        x        : LongTensor  [B, S]   – input token ids
-        mood_id  : LongTensor  [B]      – mood category index
-        genre_id : LongTensor  [B]      – genre category index
+        x        : LongTensor  [B, S]   - input token ids
+        mood_id  : LongTensor  [B]      - mood category index
+        genre_id : LongTensor  [B]      - genre category index
 
         Returns
         -------
