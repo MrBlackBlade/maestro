@@ -22,6 +22,7 @@ class Config:
     TOKENIZED_DIR = DATA_DIR / "tokenized"  # Pre-processed tokenized sequences
 
     # Model checkpoint directories
+    MODEL_CKPT_DIR = PROJECT_ROOT / "models"
     GENERATOR_CKPT_DIR = PROJECT_ROOT / "models" / "generator"
     REFINER_CKPT_DIR = PROJECT_ROOT / "models" / "refiner"
 

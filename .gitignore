@@ -3,6 +3,11 @@ datasets/*
 !datasets/.gitkeep
 *.h5
 
+*.mid
+*.midi
+!generated_samples/*.mid
+!generated_samples/*.midi
+
 # Python
 __pycache__/
 *.pyc
@@ -15,5 +20,5 @@ __pycache__/
 data/tokenized/*
 
 # Keep the best model checkpoints, but ignore the rest of the models
-models/generator/*
-models/refiner/*
+models/*/*
+!models/*/*keep*.pt

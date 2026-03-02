@@ -68,3 +68,8 @@ Data Directory:
 Datasets:
 
 - [Case](https://springernature.figshare.com/articles/dataset/CASE_Dataset-full/8869157?file=16260497)
+- [XMIDI](https://drive.google.com/file/d/1qDkSH31x7jN8X-2RyzB9wuxGji4QxYyA/view)
+
+## Model Blueprint
+
+To initialize a transformer model, subclass the `GeneralModelHandler` and define a custom `train_step()` method for your specific model and loss (see `MinimalGeneratorHandler` in `src/models/minimal_generator.py`). The handler manages the training loop and automatically saves model checkpoints; you just call `handler.train(dataloader, epochs)` and provide your model, optimizer, and loss function.

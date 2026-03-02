@@ -9,13 +9,14 @@ from tqdm import tqdm
 from src.core.config import Config
 from src.core.utils import get_tokenizer
 from src.dataloaders.singleton_dataloader import get_singleton_dataloader
-
+from src.models.general_model_handler import GeneralModelHandler
 
 from miditok import REMI, TokSequence
 
 class MinimalGenerator(nn.Module):
     def __init__(self, vocab_size, d_model=256, nhead=8, num_layers=4, max_seq_len=Config.MAX_SEQ_LEN):
         super().__init__()
+        self.vocab_size = vocab_size
         self.d_model = d_model
         
         # ==========================================
@@ -71,39 +72,27 @@ class MinimalGenerator(nn.Module):
         
         return logits
 
-class ModelHandler:
-    def __init__(self, model: nn.Module, dataloader, optimizer, criterion, tokenizer):
-        self.model = model
-        self.dataloader = dataloader
-        self.optimizer = optimizer
+class MinimalGeneratorHandler(GeneralModelHandler):
+
+    MODEL_NAME = "minimal_generator_0"
+
+    def __init__(self, model: nn.Module, optimizer, criterion):
+        super().__init__(model, optimizer, self.MODEL_NAME)
         self.criterion = criterion
 
-        self.vocab_size = tokenizer.vocab_size
+    def train_step(self, batch):
+        x_batch, y_batch = batch
+        x_batch = x_batch.to(self.device)
+        y_batch = y_batch.to(self.device)
 
-        self.device = Config.DEVICE
+        logits = self.model(x_batch)
+        logits_flat = logits.view(-1, self.model.vocab_size)
 
-    def train(self, epochs):
-        self.model.train()
-        self.model.to(self.device)
+        y_flat = y_batch.view(-1)
 
-        for epoch in range(epochs):
-            loop = tqdm(self.dataloader, desc=f"Epoch {epoch}/{epochs}", mininterval=1.0)
-            for batch_idx, (x_batch, y_batch) in enumerate(loop):
+        loss = self.criterion(logits_flat, y_flat)
 
-                x_batch = x_batch.to(self.device)
-                y_batch = y_batch.to(self.device)
-
-                self.optimizer.zero_grad()
-                logits = self.model(x_batch)
-
-                logits_flat = logits.view(-1, self.vocab_size)
-                y_flat = y_batch.view(-1)
-
-                loss = self.criterion(logits_flat, y_flat)
-                loss.backward()
-                self.optimizer.step()
-
-                print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item()}")
+        return loss
     
     def generate(self, x_batch):
         self.model.eval()
@@ -169,8 +158,8 @@ if __name__ == "__main__":
 
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
     criterion = nn.CrossEntropyLoss()
-    handler = ModelHandler(model, dataloader, optimizer, criterion, tokenizer)
-    handler.train(epochs=5)
+    handler = MinimalGeneratorHandler(model, optimizer, criterion)
+    handler.train(dataloader=dataloader, epochs=5)
 
     for x_batch, y_batch in dataloader:
         x_batch = x_batch.to(Config.DEVICE)
