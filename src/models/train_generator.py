@@ -20,12 +20,12 @@ from pathlib import Path
 from tqdm import tqdm
 
 # Ensure project root is importable
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from config import Config
-from src.dataset_cached import get_cached_dataloader
-from src.model_generator import MusicGenerator
-from src.utils import get_tokenizer
+from src.core.config import Config
+from src.dataloaders.dataset_cached import get_cached_dataloader
+from src.models.model_generator import MusicGenerator
+from src.core.utils import get_tokenizer
 
 
 def train():
