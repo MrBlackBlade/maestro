@@ -11,8 +11,8 @@ import torch.nn.functional as F
 # sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from src.core.config import Config
-from src.models.model_generator import MusicGenerator
-from src.models.model_refiner import LevenshteinRefiner
+from src.models.generator import ModelGenerator
+from src.models.refiner import ModelRefiner
 from src.core.utils import get_tokenizer
 
 # ======================================================================
@@ -36,7 +36,7 @@ def load_generator():
         return None
 
     checkpoint = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
-    model = MusicGenerator(
+    model = ModelGenerator(
         vocab_size=checkpoint["vocab_size"],
         num_moods=checkpoint["num_moods"],
         num_genres=checkpoint["num_genres"],
@@ -56,7 +56,7 @@ def load_refiner():
         return None
 
     checkpoint = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
-    model = LevenshteinRefiner(
+    model = ModelRefiner(
         vocab_size=checkpoint["vocab_size"],
         num_moods=checkpoint["num_moods"],
         num_genres=checkpoint["num_genres"],

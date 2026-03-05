@@ -67,7 +67,9 @@ class Config:
     BATCH_SIZE = 32                   # Increased for better GPU utilization
     LEARNING_RATE = 1e-4
     WEIGHT_DECAY = 1e-5
-    EPOCHS = 50
+    
+    # Set epochs to 5 for a quick test run; increase to 20 or more for better results
+    EPOCHS = 5
     GRAD_CLIP = 1.0                  # Gradient clipping max norm
     
     # Data loading optimization

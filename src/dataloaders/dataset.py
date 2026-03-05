@@ -16,7 +16,7 @@ from src.core.config import Config
 from src.core.utils import get_tokenizer, suppress_stdout_stderr
 
 
-class XmidiDataset(Dataset):
+class UncachedDataset(Dataset):
     """
     Each sample returns:
         tokens  - LongTensor  [SEQ_LEN]     (REMI token ids)
@@ -95,7 +95,7 @@ def get_dataloader(
     """Convenience function used by training scripts."""
     if tokenizer is None:
         tokenizer = get_tokenizer(Config.TOKENIZER_PARAMS_PATH)
-    dataset = XmidiDataset(csv_path, midi_folder, tokenizer)
+    dataset = UncachedDataset(csv_path, midi_folder, tokenizer)
     loader = DataLoader(
         dataset,
         batch_size=batch_size,

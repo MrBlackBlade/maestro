@@ -77,8 +77,12 @@ def save_mappings(mood_map: dict, genre_map: dict, path: str | Path):
     data = {"mood_to_id": mood_map, "genre_to_id": genre_map}
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
-
-
+        
+def save_midi(token_list: list, tokenizer, output_path: str):
+    #tok_sequence = TokSequence(token_list)
+    midi = tokenizer.decode(token_list)
+    midi.dump_midi(output_path)
+    
 def load_mappings(path: str | Path) -> tuple[dict, dict]:
     """Load label->id mappings saved during pre-processing."""
     with open(path) as f:

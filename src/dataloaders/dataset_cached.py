@@ -13,7 +13,7 @@ from torch.utils.data import Dataset, DataLoader
 from src.core.config import Config
 
 
-class CachedXmidiDataset(Dataset):
+class CachedDataset(Dataset):
     """
     Fast dataset that loads pre-tokenized sequences from .npy files.
     
@@ -84,7 +84,7 @@ def get_cached_dataloader(
     
     This is MUCH faster than the on-the-fly tokenization approach.
     """
-    dataset = CachedXmidiDataset(csv_path, tokenized_dir)
+    dataset = CachedDataset(csv_path, tokenized_dir)
     loader = DataLoader(
         dataset,
         batch_size=batch_size,

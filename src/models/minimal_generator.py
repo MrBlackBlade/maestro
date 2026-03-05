@@ -7,7 +7,7 @@ import math
 from tqdm import tqdm
 
 from src.core.config import Config
-from src.core.utils import get_tokenizer
+from src.core.utils import get_tokenizer, save_midi
 from src.dataloaders.singleton_dataloader import get_singleton_dataloader
 from src.models.general_model_handler import GeneralModelHandler
 
@@ -73,11 +73,10 @@ class MinimalGenerator(nn.Module):
         return logits
 
 class MinimalGeneratorHandler(GeneralModelHandler):
-
     MODEL_NAME = "minimal_generator_0"
 
-    def __init__(self, model: nn.Module, optimizer, criterion):
-        super().__init__(model, optimizer, self.MODEL_NAME)
+    def __init__(self, model: nn.Module, optimizer, criterion, scheduler):
+        super().__init__(model, optimizer, scheduler, self.MODEL_NAME)
         self.criterion = criterion
 
     def train_step(self, batch):
@@ -139,11 +138,6 @@ class MinimalGeneratorHandler(GeneralModelHandler):
 
         return final_token_list
 
-def save_midi(token_list: list, tokenizer, output_path: str):
-    #tok_sequence = TokSequence(token_list)
-    midi = tokenizer.decode(token_list)
-    midi.dump_midi(output_path)
-
 if __name__ == "__main__":
     #tokenizer = get_tokenizer(Config.TOKENIZER_PARAMS_PATH)
     tokenizer = get_tokenizer()
@@ -158,7 +152,10 @@ if __name__ == "__main__":
 
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
     criterion = nn.CrossEntropyLoss()
-    handler = MinimalGeneratorHandler(model, optimizer, criterion)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=Config.EPOCHS, eta_min=1e-6
+    )
+    handler = MinimalGeneratorHandler(model, optimizer, criterion, scheduler)
     handler.train(dataloader=dataloader, epochs=5)
 
     for x_batch, y_batch in dataloader:

@@ -14,11 +14,20 @@ Key design choices
 import math
 import torch
 import torch.nn as nn
+import pandas as pd
+import numpy as np
+from torch.utils.data import Dataset, DataLoader
+from pathlib import Path
+from tqdm import tqdm
 
 from src.core.config import Config
+from src.core.utils import get_tokenizer, save_midi
+# from src.dataloaders.full_dataloader import get_full_dataloader
+from src.dataloaders.singleton_dataloader import get_singleton_dataloader
+from src.dataloaders.dataset_cached import get_cached_dataloader
+from src.models.general_model_handler import GeneralModelHandler
 
-
-class MusicGenerator(nn.Module):
+class ModelGenerator(nn.Module):
     def __init__(
         self,
         vocab_size: int,
@@ -125,3 +134,95 @@ class MusicGenerator(nn.Module):
         logits = self.fc_out(out)  # [B, S, V]
         return logits
 
+class ModelGeneratorHandler(GeneralModelHandler):
+    MODEL_NAME = "generator_0"
+
+    def __init__(self, model: nn.Module, optimizer, criterion, scheduler):
+        super().__init__(model, optimizer, scheduler, self.MODEL_NAME)
+        self.criterion = criterion
+
+    def train_step(self, batch):
+        tokens, moods, genres = batch
+        
+        tokens = tokens.to(self.device)
+        moods = moods.to(self.device)
+        genres = genres.to(self.device)
+        
+        inp = tokens[:, :-1]  # [B, SEQ_LEN-1]
+        tgt = tokens[:, 1:]    # [B, SEQ_LEN-1]
+
+        # Forward: model predicts logits for each position
+        logits = self.model(inp, moods, genres)  # [B, SEQ_LEN-1, vocab_size]
+
+        # Loss calculation (Cross-Entropy):
+        # 1. Reshape logits: [B, SEQ_LEN-1, vocab_size] -> [B*(SEQ_LEN-1), vocab_size]
+        # 2. Reshape targets: [B, SEQ_LEN-1] -> [B*(SEQ_LEN-1)]
+        # 3. For each position, compute CE between predicted distribution and true token
+        # 4. ignore_index=0 means padding tokens (id=0) don't contribute to loss
+        loss = self.criterion(
+            logits.reshape(-1, vocab_size),  # [B*(SEQ_LEN-1), vocab_size]
+            tgt.reshape(-1),                  # [B*(SEQ_LEN-1)]
+        )
+
+        return loss
+    
+if __name__ == "__main__":
+    device = Config.DEVICE
+    print(f"Device: {device}")
+
+    # ---- Data ----
+    tokenizer = get_tokenizer()
+    vocab_size = len(tokenizer)
+    print(f"Vocabulary size: {vocab_size}")
+
+    ## TO BE IMPLEMENTED
+    # dataloader = get_full_dataloader()
+    dataloader = get_cached_dataloader(
+        batch_size=Config.BATCH_SIZE,
+        num_workers=Config.NUM_WORKERS,
+        persistent_workers=Config.PERSISTENT_WORKERS,
+        prefetch_factor=Config.PREFETCH_FACTOR,
+    )
+    print(f"Batches per epoch: {len(dataloader)}")
+    print(f"Using {Config.NUM_WORKERS} parallel workers for data loading")
+
+    # ---- Model ----
+    model = ModelGenerator(
+        vocab_size=vocab_size,
+        num_moods=Config.NUM_MOODS,
+        num_genres=Config.NUM_GENRES,
+    ).to(device)
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=Config.LEARNING_RATE,
+        weight_decay=Config.WEIGHT_DECAY,
+    )
+    
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=Config.EPOCHS, eta_min=1e-6
+    )
+    
+    criterion = nn.CrossEntropyLoss(ignore_index=0) 
+    
+    handler = ModelGeneratorHandler(
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        criterion=criterion
+    )
+
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Generator parameters: {total_params:,}")
+    
+    handler.train(dataloader=dataloader, epochs=Config.EPOCHS)
+
+    ## Example inference after training (using the first batch from the dataloader)
+    for x_batch, y_batch in dataloader:
+        x_batch = x_batch.to(Config.DEVICE)
+        x_batch = x_batch[0, 0:1].unsqueeze(0)
+        print(x_batch.shape)
+        generated_tokens = handler.generate(x_batch)
+        print(generated_tokens[:20])
+        save_midi(generated_tokens, tokenizer, "generated_midi.mid")
+        break

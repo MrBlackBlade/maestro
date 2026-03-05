@@ -119,7 +119,7 @@ def preprocess_all_tokens():
     print(f"Found {len(df)} MIDI files to process")
 
     # Load tokenizer
-    tokenizer = get_tokenizer(Config.TOKENIZER_PARAMS_PATH)
+    tokenizer = get_tokenizer()
     print(f"Tokenizer vocabulary size: {len(tokenizer)}")
 
     # Create output directory
@@ -171,9 +171,6 @@ def preprocess_all_tokens():
         with open(tokenized_dir / "failed_files.txt", "w") as f:
             for filename, error in failed_files:
                 f.write(f"{filename}: {error}\n")
-    print("=" * 60)
-    print("\nNext step: python 2_train_generator.py")
 
 if __name__ == "__main__":
-    train_tokenizer()
     preprocess_all_tokens()
