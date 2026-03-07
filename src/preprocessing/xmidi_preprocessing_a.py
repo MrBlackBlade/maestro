@@ -1,16 +1,16 @@
+import os
 import sys
+import traceback
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from tqdm import tqdm
 from symusic import Score
 import numpy as np
 import pandas as pd
 
-# Ensure project root is importable
-# sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 from src.core.config import Config
-from src.core.utils import get_tokenizer, save_mappings, suppress_stdout_stderr
+from src.core.utils import get_tokenizer, save_mappings
 
 def parse_xmidi_filename(filename: str) -> tuple[str, str, str] | None:
     """
@@ -103,10 +103,65 @@ def train_tokenizer():
 
     print("\nDone! Next step: python 2_train_generator.py")
 
+
+# ---------------------------------------------------------------------------
+#  Single-file tokenization (called by worker processes)
+# ---------------------------------------------------------------------------
+
+# Module-level tokenizer cache — each worker process initialises its own copy
+_worker_tokenizer = None
+
+def _init_worker():
+    """Called once per worker process to create a private tokenizer instance
+    and silence C-level stdout/stderr (symusic debug prints)."""
+    global _worker_tokenizer
+    # Redirect C-level file descriptors to devnull so C++ debug prints
+    # from symusic don't pollute the parent terminal.
+    # This is safe because each process has its own fd table.
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull_fd, 1)  # silence stdout
+    os.dup2(devnull_fd, 2)  # silence stderr
+    os.close(devnull_fd)
+    _worker_tokenizer = get_tokenizer()
+
+
+def _tokenize_one(args: tuple) -> tuple[str, bool, str | None]:
+    """
+    Tokenize a single MIDI file and save the result as a .npy file.
+
+    Accepts a tuple (midi_path_str, output_path_str) so it can be used
+    with ProcessPoolExecutor (all args must be picklable).
+
+    Returns (filename, success, error_message).
+    """
+    midi_path_str, output_path_str = args
+    midi_path = Path(midi_path_str)
+    output_path = Path(output_path_str)
+
+    try:
+        score = Score(str(midi_path))
+        tok_result = _worker_tokenizer.encode(score)
+
+        if isinstance(tok_result, list):
+            token_ids = tok_result[0].ids
+        else:
+            token_ids = tok_result.ids
+
+        np.save(output_path, np.array(token_ids, dtype=np.int32))
+        return midi_path.name, True, None
+
+    except Exception as e:
+        return midi_path.name, False, str(e)
+
+
+# ---------------------------------------------------------------------------
+#  Main parallel preprocessing entry-point
+# ---------------------------------------------------------------------------
+
 def preprocess_all_tokens():
-    """Tokenize all MIDI files and save as .npy files."""
+    """Tokenize all MIDI files in parallel and save as .npy files."""
     print("=" * 60)
-    print("PRE-PROCESSING: Tokenizing all MIDI files")
+    print("PRE-PROCESSING: Tokenizing all MIDI files (multi-process)")
     print("=" * 60)
 
     # Load metadata
@@ -118,7 +173,7 @@ def preprocess_all_tokens():
     df = pd.read_csv(Config.METADATA_CSV)
     print(f"Found {len(df)} MIDI files to process")
 
-    # Load tokenizer
+    # Load tokenizer (main process — just to report vocab size)
     tokenizer = get_tokenizer()
     print(f"Tokenizer vocabulary size: {len(tokenizer)}")
 
@@ -127,50 +182,72 @@ def preprocess_all_tokens():
     tokenized_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {tokenized_dir}")
 
-    # Process each file
-    success_count = 0
-    fail_count = 0
-    failed_files = []
+    # --- Build work list (skip already-processed) ---
+    work_args: list[tuple[str, str]] = []
+    already_done = 0
 
-    for idx, row in tqdm(df.iterrows(), total=len(df), desc="Tokenizing"):
+    for _, row in df.iterrows():
         midi_path = Config.XMIDI_DATASET_DIR / row["filename"]
-        output_path = tokenized_dir / f"{row['filename'].replace('.midi', '.npy')}"
-
-        # Skip if already processed
+        output_path = tokenized_dir / row["filename"].replace(".midi", ".npy")
         if output_path.exists():
-            success_count += 1
-            continue
+            already_done += 1
+        else:
+            work_args.append((str(midi_path), str(output_path)))
 
-        try:
-            # Tokenize (suppress debug output)
-            with suppress_stdout_stderr():
-                score = Score(str(midi_path))
-                tok_result = tokenizer.encode(score)
+    total = len(df)
+    to_process = len(work_args)
+    print(f"Already processed: {already_done}/{total}")
+    print(f"To tokenize now:   {to_process}/{total}")
 
-            if isinstance(tok_result, list):
-                token_ids = tok_result[0].ids
-            else:
-                token_ids = tok_result.ids
+    if to_process == 0:
+        print("Nothing to do – all files already tokenized.")
+        return
 
-            # Save as numpy array (much faster to load than re-tokenizing)
-            np.save(output_path, np.array(token_ids, dtype=np.int32))
-            success_count += 1
+    # --- Parallel tokenization (multi-process) ---
+    num_workers = Config.TOKENIZE_NUM_WORKERS
+    print(f"Using {num_workers} worker processes", flush=True)
 
-        except Exception as e:
-            fail_count += 1
-            failed_files.append((row["filename"], str(e)))
-            if fail_count <= 10:  # Print first 10 errors
-                print(f"\nFailed to tokenize {row['filename']}: {e}")
+    success_count = already_done
+    fail_count = 0
+    failed_files: list[tuple[str, str]] = []
 
+    try:
+        with ProcessPoolExecutor(
+            max_workers=num_workers,
+            initializer=_init_worker,
+        ) as pool:
+            futures = {
+                pool.submit(_tokenize_one, args): args[0]
+                for args in work_args
+            }
+
+            with tqdm(total=to_process, desc="Tokenizing") as pbar:
+                for future in as_completed(futures):
+                    filename, ok, err = future.result()
+                    if ok:
+                        success_count += 1
+                    else:
+                        fail_count += 1
+                        failed_files.append((filename, err or "unknown error"))
+                        if fail_count <= 10:
+                            tqdm.write(f"  FAILED: {filename}: {err}")
+                    pbar.update(1)
+    except Exception:
+        traceback.print_exc()
+        return
+
+    # --- Report ---
     print("\n" + "=" * 60)
-    print(f"Pre-processing complete!")
-    print(f"  Success: {success_count}/{len(df)}")
-    print(f"  Failed:  {fail_count}/{len(df)}")
+    print("Pre-processing complete!")
+    print(f"  Success: {success_count}/{total}")
+    print(f"  Failed:  {fail_count}/{total}")
     if failed_files:
-        print(f"\nFailed files saved to: {tokenized_dir / 'failed_files.txt'}")
-        with open(tokenized_dir / "failed_files.txt", "w") as f:
+        fail_log = tokenized_dir / "failed_files.txt"
+        print(f"\nFailed files saved to: {fail_log}")
+        with open(fail_log, "w") as f:
             for filename, error in failed_files:
                 f.write(f"{filename}: {error}\n")
+
 
 if __name__ == "__main__":
     preprocess_all_tokens()

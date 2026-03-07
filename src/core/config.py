@@ -95,3 +95,8 @@ class Config:
     # Device
     # ========================
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # ========================
+    # Preprocessing
+    # ========================
+    TOKENIZE_NUM_WORKERS = 8                    # Number of worker processes for parallel tokenization
