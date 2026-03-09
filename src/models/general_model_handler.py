@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -34,6 +35,7 @@ class GeneralModelHandler(ABC):
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
+            "scheduler_state_dict": self.scheduler.state_dict(),
             "loss": avg_loss,
         }
 
@@ -42,6 +44,19 @@ class GeneralModelHandler(ABC):
             torch.save(ckpt, self.ckpt_dir / f"{self.model_name}_best.pt")
         torch.save(ckpt, self.ckpt_dir / f"{self.model_name}_epoch_{epoch}.pt")
     
+    def load_checkpoint(self, checkpoint_path: Path | None = None, epoch: int | None = None):
+        if checkpoint_path is None:
+            checkpoint_path = self.ckpt_dir / f"{self.model_name}_best.pt"
+        if epoch is not None:
+            checkpoint_path = self.ckpt_dir / f"{self.model_name}_epoch_{epoch}.pt"
+
+        ckpt = torch.load(checkpoint_path)
+        self.model.load_state_dict(ckpt["model_state_dict"])
+        self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        self.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        self.best_loss = ckpt["loss"]
+        return ckpt
+
     def train(self, dataloader, epochs):
         self.model.train()
         self.model.to(self.device)

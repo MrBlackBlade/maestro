@@ -13,7 +13,7 @@ from torch.utils.data import Dataset, DataLoader
 from src.core.config import Config
 
 
-class CachedDataset(Dataset):
+class ModifiedCachedDataset(Dataset):
     """
     Fast dataset that loads pre-tokenized sequences from .npy files.
     
@@ -28,8 +28,12 @@ class CachedDataset(Dataset):
         csv_path: str | Path,
         tokenized_dir: str | Path,
         seq_len: int = Config.SEQ_LEN,
+        sample_factor: float = 1.0,
     ):
         self.df = pd.read_csv(csv_path)
+        # Downscale the dataframe randomly to 2% of its original size
+        if len(self.df) > 0 and sample_factor < 1.0 and sample_factor > 0.0:
+            self.df = self.df.sample(frac=sample_factor, random_state=42).reset_index(drop=True)
         self.tokenized_dir = Path(tokenized_dir)
         self.seq_len = seq_len
 
@@ -70,7 +74,7 @@ class CachedDataset(Dataset):
         return tokens, mood_id, genre_id
 
 
-def get_cached_dataloader(
+def get_modified_cached_dataloader(
     csv_path: str | Path = Config.METADATA_CSV,
     tokenized_dir: str | Path = Config.DATA_DIR / "tokenized",
     batch_size: int = Config.BATCH_SIZE,
@@ -78,13 +82,14 @@ def get_cached_dataloader(
     num_workers: int = 4,  # Use multiple workers for parallel loading
     persistent_workers: bool = True,  # Keep workers alive between epochs
     prefetch_factor: int = 2,  # Prefetch batches
+    sample_factor: float = 1.0,
 ):
     """
     Get a DataLoader using pre-tokenized cached data.
     
     This is MUCH faster than the on-the-fly tokenization approach.
     """
-    dataset = CachedDataset(csv_path, tokenized_dir)
+    dataset = ModifiedCachedDataset(csv_path, tokenized_dir, sample_factor=sample_factor)
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -97,11 +102,12 @@ def get_cached_dataloader(
     return loader
 
 if __name__ == "__main__":
-    dataloader = get_cached_dataloader(
+    dataloader = get_modified_cached_dataloader(
         batch_size=Config.BATCH_SIZE,
         num_workers=Config.NUM_WORKERS,
         persistent_workers=Config.PERSISTENT_WORKERS,
         prefetch_factor=Config.PREFETCH_FACTOR,
+        sample_factor=1.0
     )
     for tokens, mood_id, genre_id in dataloader:
         print(tokens.shape)

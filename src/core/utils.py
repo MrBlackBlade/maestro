@@ -10,6 +10,8 @@ from pathlib import Path
 
 from miditok import REMI, TokenizerConfig
 from symusic import Score
+import torch
+import torch.nn.functional as F
 
 from src.core.config import Config
 
@@ -89,3 +91,47 @@ def load_mappings(path: str | Path) -> tuple[dict, dict]:
         data = json.load(f)
     return data["mood_to_id"], data["genre_to_id"]
 
+def top_k_top_p_sample(logits: torch.Tensor, top_k: int, top_p: float, temperature: float, vocab_size: int):
+    """
+    Apply temperature scaling, top-k, and nucleus (top-p) filtering,
+    then sample a single token.
+    
+    Parameters
+    ----------
+    logits : torch.Tensor [B, vocab_size]
+        Raw logits from the model
+    top_k : int
+        Top-k sampling parameter
+    top_p : float
+        Nucleus sampling parameter
+    temperature : float
+        Temperature scaling
+    vocab_size : int
+        Valid vocabulary size (to clamp logits)
+    """
+    # Clamp logits to valid vocabulary range
+    if logits.size(-1) > vocab_size:
+        logits = logits[:, :vocab_size]
+    
+    logits = logits / max(temperature, 1e-8)
+
+    # Top-k
+    if top_k > 0:
+        top_k = min(top_k, logits.size(-1))
+        values, _ = torch.topk(logits, top_k)
+        min_val = values[:, -1].unsqueeze(-1)
+        logits = torch.where(logits < min_val, torch.full_like(logits, -float("inf")), logits)
+
+    # Top-p (nucleus)
+    if 0.0 < top_p < 1.0:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+        # Remove tokens with cumulative prob above threshold
+        sorted_mask = cumulative_probs - F.softmax(sorted_logits, dim=-1) >= top_p
+        sorted_logits[sorted_mask] = -float("inf")
+        # Scatter back to original positions
+        logits = torch.zeros_like(logits).scatter(1, sorted_indices, sorted_logits)
+
+    probs = F.softmax(logits, dim=-1)
+    next_token = torch.multinomial(probs, num_samples=1)
+    return next_token

@@ -84,10 +84,10 @@ class MinimalGeneratorHandler(GeneralModelHandler):
         x_batch = x_batch.to(self.device)
         y_batch = y_batch.to(self.device)
 
-        logits = self.model(x_batch)
-        logits_flat = logits.view(-1, self.model.vocab_size)
+        logits = self.model(x_batch)                            #[B, SEQ_LEN, vocab_size]
+        logits_flat = logits.view(-1, self.model.vocab_size)    #[B*SEQ_LEN, vocab_size]
 
-        y_flat = y_batch.view(-1)
+        y_flat = y_batch.view(-1)                               #[B*SEQ_LEN]
 
         loss = self.criterion(logits_flat, y_flat)
 

@@ -17,14 +17,17 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
+import torch.nn.functional as F
 from pathlib import Path
 from tqdm import tqdm
 
 from src.core.config import Config
-from src.core.utils import get_tokenizer, save_midi
+from src.core.utils import get_tokenizer, save_midi, top_k_top_p_sample
 # from src.dataloaders.full_dataloader import get_full_dataloader
+from src.dataloaders import singleton_dataloader
 from src.dataloaders.singleton_dataloader import get_singleton_dataloader
-from src.dataloaders.dataset_cached import get_cached_dataloader
+# from src.dataloaders.dataset_cached import get_cached_dataloader
+from src.dataloaders.modified_dataset_cached import get_modified_cached_dataloader
 from src.models.general_model_handler import GeneralModelHandler
 
 class ModelGenerator(nn.Module):
@@ -166,23 +169,117 @@ class ModelGeneratorHandler(GeneralModelHandler):
 
         return loss
     
+    def generate(self, mood, genre, start=[1]):
+        self.model.eval()
+        self.model.to(self.device)
+
+        target_length = 4096
+        # window_size = Config.MAX_SEQ_LEN
+
+        # current_bar = set()
+
+        m_id = torch.tensor([Config.MOOD_TO_ID[mood]], device=Config.DEVICE)
+        g_id = torch.tensor([Config.GENRE_TO_ID[genre]], device=Config.DEVICE)
+
+        # Start with BOS token (id=1 in most tokenizers, fallback to 1)
+        #bos_id = tokenizer.special_tokens_ids[1] if hasattr(tokenizer, "special_tokens_ids") else 1
+        # Ensure BOS token is valid
+        # bos_id = min(bos_id, self.model.vocab_size - 1)
+        # bos_token = 1
+        sequence = torch.tensor([start], dtype=torch.long, device=Config.DEVICE)
+
+        position_token_ids = set()
+        pitch_token_ids = set()
+        program_token_ids = set() 
+        bar_token_ids = set()
+        tokenizer = get_tokenizer()
+        for tok_str, tok_id in tokenizer.vocab.items():
+            if "Position".lower() in tok_str.lower():
+                position_token_ids.add(tok_id)
+            elif "Pitch".lower() in tok_str.lower():
+                pitch_token_ids.add(tok_id)
+            elif "Program".lower() in tok_str.lower():
+                program_token_ids.add(tok_id)
+            elif "Bar".lower() in tok_str.lower():
+                bar_token_ids.add(tok_id)
+
+        dict_decoder = {tok_id: tok_str for tok_str, tok_id in tokenizer.vocab.items()}
+
+
+        current_bar = set()
+        current_program = None
+        current_position = None
+        current_pitch = None
+
+        progress = tqdm(range(target_length), desc="Generating MIDI")
+        with torch.no_grad():
+            for i in progress:
+                # Sliding window: keep last MAX_SEQ_LEN tokens
+                # Get Context Window
+                ctx = sequence[:, -Config.MAX_SEQ_LEN:]
+
+                # Inference
+                logits = self.model(ctx, m_id, g_id)
+
+                # Get Next Token Logits
+                next_logits = logits[:, -1, :]  # last position
+                
+                # Mask out the last token
+                last_token_id = sequence[0, -1].item()
+                next_logits[0, last_token_id] = float('-inf')
+
+                # If we're about to generate a pitch (last token was position), mask any pitch that would duplicate a note already in this bar
+                for program, position, pitch in current_bar:
+                    next_logits[0, pitch] = float('-inf')
+
+                # Sample
+                next_token = top_k_top_p_sample(next_logits, 0, 0, 1, self.model.vocab_size)
+                # Clamp Token to Valid Range
+                next_token = torch.clamp(next_token, 0, self.model.vocab_size - 1)
+                # Append Next Token to Sequence
+                sequence = torch.cat([sequence, next_token], dim=1)
+
+                # Update state from the token we just generated
+                next_token_id = next_token.item()
+                if next_token_id in bar_token_ids:
+                    current_bar = set()
+                elif next_token_id in program_token_ids:
+                    current_program = next_token_id
+                elif next_token_id in position_token_ids:
+                    current_position = next_token_id
+                elif next_token_id in pitch_token_ids:
+                    # if current_program is not None and current_position is not None:
+                    note = (current_program, current_position, next_token_id)
+                    current_bar.add(note)
+
+                # if (i + 1) % 10 == 0 or i == target_length - 1:
+                #     progress.update(10)
+                #     progress.set_postfix(f"Generated {i + 1}/{target_length} tokens")
+                #     # status_text.text(f"Generated {i + 1}/{target_length} tokens")
+        
+        final_token_list = sequence.squeeze(0).cpu().tolist()
+
+        return final_token_list
+    
 if __name__ == "__main__":
     device = Config.DEVICE
     print(f"Device: {device}")
 
     # ---- Data ----
     tokenizer = get_tokenizer()
-    vocab_size = len(tokenizer)
+    vocab_size = tokenizer.vocab_size
     print(f"Vocabulary size: {vocab_size}")
 
     ## TO BE IMPLEMENTED
     # dataloader = get_full_dataloader()
-    dataloader = get_cached_dataloader(
+    dataloader = get_modified_cached_dataloader(
         batch_size=Config.BATCH_SIZE,
         num_workers=Config.NUM_WORKERS,
         persistent_workers=Config.PERSISTENT_WORKERS,
         prefetch_factor=Config.PREFETCH_FACTOR,
+        sample_factor=1.0
     )
+    
     print(f"Batches per epoch: {len(dataloader)}")
     print(f"Using {Config.NUM_WORKERS} parallel workers for data loading")
 
@@ -215,14 +312,19 @@ if __name__ == "__main__":
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Generator parameters: {total_params:,}")
     
-    handler.train(dataloader=dataloader, epochs=Config.EPOCHS)
+    # handler.train(dataloader=dataloader, epochs=Config.EPOCHS)
+    handler.load_checkpoint(epoch=3)
 
     ## Example inference after training (using the first batch from the dataloader)
-    for x_batch, y_batch in dataloader:
-        x_batch = x_batch.to(Config.DEVICE)
-        x_batch = x_batch[0, 0:1].unsqueeze(0)
-        print(x_batch.shape)
-        generated_tokens = handler.generate(x_batch)
-        print(generated_tokens[:20])
-        save_midi(generated_tokens, tokenizer, "generated_midi.mid")
+    simple = get_singleton_dataloader(Config.TOKENIZED_DIR / "XMIDI_warm_jazz_5AKYJWEA.npy", seq_len=1024)
+    token_sequence = []
+    for x, y in simple:
+        token_sequence = x[0,:64].tolist()
         break
+    generated_tokens = handler.generate(mood="angry", genre="classical", start=token_sequence)
+    print(generated_tokens[:20])
+    save_midi(generated_tokens, tokenizer, "generated_midi.mid")
+    # token_sequence = [1]
+    # generated_tokens = handler.generate(mood="exciting", genre="classical", start=token_sequence)
+    # print(generated_tokens[:20])
+    # save_midi(generated_tokens, tokenizer, "generated_midi.mid")

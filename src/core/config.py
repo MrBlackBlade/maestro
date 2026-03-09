@@ -69,7 +69,7 @@ class Config:
     WEIGHT_DECAY = 1e-5
     
     # Set epochs to 5 for a quick test run; increase to 20 or more for better results
-    EPOCHS = 5
+    EPOCHS = 50
     GRAD_CLIP = 1.0                  # Gradient clipping max norm
     
     # Data loading optimization
