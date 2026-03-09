@@ -55,16 +55,19 @@ class ModelGenerator(nn.Module):
         self.mood_emb = nn.Embedding(num_moods, d_model)
         self.genre_emb = nn.Embedding(num_genres, d_model)
 
-        # ---- Transformer Decoder stack ----
-        decoder_layer = nn.TransformerDecoderLayer(
+        # ---- Transformer stack (decoder-only, GPT-style) ----
+        # We use TransformerEncoder (self-attention only) with a causal mask.
+        # NOT TransformerDecoder, which has cross-attention that would leak
+        # future information through the unmasked memory path.
+        encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
             batch_first=True,
-            norm_first=True,  # Pre-LN for stable training
+            norm_first=True,
         )
-        self.transformer = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
         # ---- Output projection ----
         self.fc_out = nn.Linear(d_model, vocab_size)
@@ -84,14 +87,6 @@ class ModelGenerator(nn.Module):
         nn.init.normal_(self.genre_emb.weight, std=0.02)
         nn.init.normal_(self.fc_out.weight, std=0.02)
         nn.init.zeros_(self.fc_out.bias)
-
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _make_causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
-        """Upper-triangular boolean mask (True = masked / ignored)."""
-        return torch.triu(
-            torch.ones(seq_len, seq_len, device=device, dtype=torch.bool), diagonal=1
-        )
 
     # ------------------------------------------------------------------
     def forward(
@@ -114,27 +109,20 @@ class ModelGenerator(nn.Module):
         B, S = x.shape
         device = x.device
 
-        # 1. Embed tokens + positions
-        positions = torch.arange(S, device=device).unsqueeze(0)  # [1, S]
+        positions = torch.arange(S, device=device).unsqueeze(0)
         h = self.token_emb(x) * math.sqrt(self.d_model)
         h = h + self.pos_emb(positions)
 
-        # 2. Add mood + genre conditioning (broadcast over sequence dim)
         cond = self.mood_emb(mood_id).unsqueeze(1) + self.genre_emb(genre_id).unsqueeze(1)
-        h = h + cond  # [B, S, D]
+        h = h + cond
 
         h = self.emb_norm(h)
         h = self.drop(h)
 
-        # 3. Causal self-attention
-        mask = self._make_causal_mask(S, device)
+        causal_mask = nn.Transformer.generate_square_subsequent_mask(S, device=device)
+        out = self.transformer(h, mask=causal_mask, is_causal=True)
 
-        # TransformerDecoder expects (tgt, memory). We use self-attention only
-        # by passing h as both tgt and memory with a causal mask on tgt.
-        out = self.transformer(tgt=h, memory=h, tgt_mask=mask)
-
-        # 4. Project to vocabulary
-        logits = self.fc_out(out)  # [B, S, V]
+        logits = self.fc_out(out)
         return logits
 
 class ModelGeneratorHandler(GeneralModelHandler):
@@ -163,103 +151,52 @@ class ModelGeneratorHandler(GeneralModelHandler):
         # 3. For each position, compute CE between predicted distribution and true token
         # 4. ignore_index=0 means padding tokens (id=0) don't contribute to loss
         loss = self.criterion(
-            logits.reshape(-1, vocab_size),  # [B*(SEQ_LEN-1), vocab_size]
-            tgt.reshape(-1),                  # [B*(SEQ_LEN-1)]
+            logits.reshape(-1, self.model.vocab_size),
+            tgt.reshape(-1),
         )
 
         return loss
     
-    def generate(self, mood, genre, start=[1]):
+    def generate(
+        self,
+        mood: str,
+        genre: str,
+        start: list[int] | None = None,
+        target_length: int = 4096,
+        temperature: float = Config.TEMPERATURE,
+        top_k: int = Config.TOP_K,
+        top_p: float = Config.TOP_P,
+    ):
         self.model.eval()
         self.model.to(self.device)
 
-        target_length = 4096
-        # window_size = Config.MAX_SEQ_LEN
-
-        # current_bar = set()
-
-        m_id = torch.tensor([Config.MOOD_TO_ID[mood]], device=Config.DEVICE)
-        g_id = torch.tensor([Config.GENRE_TO_ID[genre]], device=Config.DEVICE)
-
-        # Start with BOS token (id=1 in most tokenizers, fallback to 1)
-        #bos_id = tokenizer.special_tokens_ids[1] if hasattr(tokenizer, "special_tokens_ids") else 1
-        # Ensure BOS token is valid
-        # bos_id = min(bos_id, self.model.vocab_size - 1)
-        # bos_token = 1
-        sequence = torch.tensor([start], dtype=torch.long, device=Config.DEVICE)
-
-        position_token_ids = set()
-        pitch_token_ids = set()
-        program_token_ids = set() 
-        bar_token_ids = set()
         tokenizer = get_tokenizer()
-        for tok_str, tok_id in tokenizer.vocab.items():
-            if "Position".lower() in tok_str.lower():
-                position_token_ids.add(tok_id)
-            elif "Pitch".lower() in tok_str.lower():
-                pitch_token_ids.add(tok_id)
-            elif "Program".lower() in tok_str.lower():
-                program_token_ids.add(tok_id)
-            elif "Bar".lower() in tok_str.lower():
-                bar_token_ids.add(tok_id)
 
-        dict_decoder = {tok_id: tok_str for tok_str, tok_id in tokenizer.vocab.items()}
+        if start is None or len(start) == 0:
+            bos_id = 1
+            if hasattr(tokenizer, "special_tokens_ids") and len(tokenizer.special_tokens_ids) > 1:
+                bos_id = tokenizer.special_tokens_ids[1]
+            bos_id = min(bos_id, self.model.vocab_size - 1)
+            start = [bos_id]
 
-
-        current_bar = set()
-        current_program = None
-        current_position = None
-        current_pitch = None
+        m_id = torch.tensor([Config.MOOD_TO_ID[mood]], device=self.device)
+        g_id = torch.tensor([Config.GENRE_TO_ID[genre]], device=self.device)
+        sequence = torch.tensor([start], dtype=torch.long, device=self.device)
 
         progress = tqdm(range(target_length), desc="Generating MIDI")
         with torch.no_grad():
-            for i in progress:
-                # Sliding window: keep last MAX_SEQ_LEN tokens
-                # Get Context Window
+            for _ in progress:
                 ctx = sequence[:, -Config.MAX_SEQ_LEN:]
-
-                # Inference
                 logits = self.model(ctx, m_id, g_id)
+                next_logits = logits[:, -1, :]
 
-                # Get Next Token Logits
-                next_logits = logits[:, -1, :]  # last position
-                
-                # Mask out the last token
-                last_token_id = sequence[0, -1].item()
-                next_logits[0, last_token_id] = float('-inf')
-
-                # If we're about to generate a pitch (last token was position), mask any pitch that would duplicate a note already in this bar
-                for program, position, pitch in current_bar:
-                    next_logits[0, pitch] = float('-inf')
-
-                # Sample
-                next_token = top_k_top_p_sample(next_logits, 0, 0, 1, self.model.vocab_size)
-                # Clamp Token to Valid Range
+                next_token = top_k_top_p_sample(
+                    next_logits, top_k, top_p, temperature, self.model.vocab_size
+                )
                 next_token = torch.clamp(next_token, 0, self.model.vocab_size - 1)
-                # Append Next Token to Sequence
                 sequence = torch.cat([sequence, next_token], dim=1)
 
-                # Update state from the token we just generated
-                next_token_id = next_token.item()
-                if next_token_id in bar_token_ids:
-                    current_bar = set()
-                elif next_token_id in program_token_ids:
-                    current_program = next_token_id
-                elif next_token_id in position_token_ids:
-                    current_position = next_token_id
-                elif next_token_id in pitch_token_ids:
-                    # if current_program is not None and current_position is not None:
-                    note = (current_program, current_position, next_token_id)
-                    current_bar.add(note)
-
-                # if (i + 1) % 10 == 0 or i == target_length - 1:
-                #     progress.update(10)
-                #     progress.set_postfix(f"Generated {i + 1}/{target_length} tokens")
-                #     # status_text.text(f"Generated {i + 1}/{target_length} tokens")
-        
-        final_token_list = sequence.squeeze(0).cpu().tolist()
-
-        return final_token_list
+        return sequence.squeeze(0).cpu().tolist()
     
 if __name__ == "__main__":
     device = Config.DEVICE
@@ -312,19 +249,8 @@ if __name__ == "__main__":
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Generator parameters: {total_params:,}")
     
-    # handler.train(dataloader=dataloader, epochs=Config.EPOCHS)
-    handler.load_checkpoint(epoch=3)
+    handler.train(dataloader=dataloader, epochs=Config.EPOCHS)
 
-    ## Example inference after training (using the first batch from the dataloader)
-    simple = get_singleton_dataloader(Config.TOKENIZED_DIR / "XMIDI_warm_jazz_5AKYJWEA.npy", seq_len=1024)
-    token_sequence = []
-    for x, y in simple:
-        token_sequence = x[0,:64].tolist()
-        break
-    generated_tokens = handler.generate(mood="angry", genre="classical", start=token_sequence)
+    generated_tokens = handler.generate(mood="exciting", genre="classical")
     print(generated_tokens[:20])
     save_midi(generated_tokens, tokenizer, "generated_midi.mid")
-    # token_sequence = [1]
-    # generated_tokens = handler.generate(mood="exciting", genre="classical", start=token_sequence)
-    # print(generated_tokens[:20])
-    # save_midi(generated_tokens, tokenizer, "generated_midi.mid")

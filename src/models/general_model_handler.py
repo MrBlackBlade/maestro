@@ -67,20 +67,24 @@ class GeneralModelHandler(ABC):
 
             loop = tqdm(dataloader, desc=f"Epoch {epoch}/{epochs}", mininterval=1.0)
             for batch_idx, batch in enumerate(loop):
-                loss = self.train_step(batch)
                 self.optimizer.zero_grad()
-
+                loss = self.train_step(batch)
                 loss.backward()
+
+                if Config.GRAD_CLIP > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), Config.GRAD_CLIP)
+
+                self.optimizer.step()
+
                 epoch_loss += loss.item()
                 num_batches += 1
-                self.optimizer.step()
-                self.scheduler.step()
                 
                 lr = self.scheduler.get_last_lr()[0]
                 
                 if batch_idx % 10 == 0 or batch_idx == len(dataloader) - 1:
                     loop.set_postfix(loss=f"{loss.item():.4f}", avg_loss=f"{epoch_loss/num_batches:.4f}", lr=f"{lr:.2e}")
             
+            self.scheduler.step()
             avg_loss = epoch_loss / max(num_batches, 1)
 
             self.save_checkpoint(epoch, avg_loss)
