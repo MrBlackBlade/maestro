@@ -126,7 +126,7 @@ class ModelGenerator(nn.Module):
         return logits
 
 class ModelGeneratorHandler(GeneralModelHandler):
-    MODEL_NAME = "generator_0"
+    MODEL_NAME = "generator_1"
 
     def __init__(self, model: nn.Module, optimizer, criterion, scheduler):
         super().__init__(model, optimizer, scheduler, self.MODEL_NAME)
@@ -186,7 +186,7 @@ class ModelGeneratorHandler(GeneralModelHandler):
         progress = tqdm(range(target_length), desc="Generating MIDI")
         with torch.no_grad():
             for _ in progress:
-                ctx = sequence[:, -Config.MAX_SEQ_LEN:]
+                ctx = sequence[:, -(Config.SEQ_LEN-1):]
                 logits = self.model(ctx, m_id, g_id)
                 next_logits = logits[:, -1, :]
 
@@ -249,8 +249,9 @@ if __name__ == "__main__":
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Generator parameters: {total_params:,}")
     
-    handler.train(dataloader=dataloader, epochs=Config.EPOCHS)
+    #handler.train(dataloader=dataloader, epochs=10)
+    handler.load_checkpoint(epoch=4)
 
-    generated_tokens = handler.generate(mood="exciting", genre="classical")
+    generated_tokens = handler.generate(mood="angry", genre="classical")
     print(generated_tokens[:20])
     save_midi(generated_tokens, tokenizer, "generated_midi.mid")
