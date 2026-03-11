@@ -63,7 +63,7 @@ class Config:
     # ========================
     # Training Hyperparameters
     # ========================
-    SEQ_LEN = 512                    # Training chunk length
+    SEQ_LEN = 1024                   # Training chunk length
     BATCH_SIZE = 32                   # Increased for better GPU utilization
     LEARNING_RATE = 1e-4
     WEIGHT_DECAY = 1e-5

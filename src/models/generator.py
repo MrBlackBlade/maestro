@@ -250,8 +250,8 @@ if __name__ == "__main__":
     print(f"Generator parameters: {total_params:,}")
     
     #handler.train(dataloader=dataloader, epochs=10)
-    handler.load_checkpoint(epoch=4)
+    handler.load_checkpoint(epoch=9)
 
-    generated_tokens = handler.generate(mood="angry", genre="classical")
+    generated_tokens = handler.generate(mood="romantic", genre="country")
     print(generated_tokens[:20])
     save_midi(generated_tokens, tokenizer, "generated_midi.mid")
