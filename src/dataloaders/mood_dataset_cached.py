@@ -59,13 +59,13 @@ class MoodCachedDataset(Dataset):
 
         # Pad / random-crop to seq_len
         if len(token_ids) == 0:
-            token_ids = [0] * self.seq_len
-        elif len(token_ids) < self.seq_len:
-            token_ids = token_ids + [0] * (self.seq_len - len(token_ids))
-        elif len(token_ids) > self.seq_len:
+            token_ids = [0] * (self.seq_len + 1)
+        elif len(token_ids) < (self.seq_len + 1):
+            token_ids = token_ids + [0] * ((self.seq_len + 1) - len(token_ids))
+        elif len(token_ids) > (self.seq_len + 1):
             # Random crop for data augmentation
             start = np.random.randint(0, len(token_ids) - self.seq_len + 1)
-            token_ids = token_ids[start : start + self.seq_len]
+            token_ids = token_ids[start : start + (self.seq_len + 1)]
         # else: len(token_ids) == self.seq_len, use as-is
 
         chance = random()
@@ -76,7 +76,7 @@ class MoodCachedDataset(Dataset):
 
 
         tokens = torch.tensor(token_ids, dtype=torch.long)
-        mood_id = torch.tensor([selected_mood_id] * (self.seq_len - 1), dtype=torch.long)
+        mood_id = torch.tensor([selected_mood_id] * self.seq_len, dtype=torch.long)
 
         return tokens, mood_id
 

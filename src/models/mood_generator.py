@@ -108,8 +108,6 @@ class MoodModelGenerator(nn.Module):
         positions = torch.arange(S, device=device).unsqueeze(0)
         h = self.token_emb(x) * math.sqrt(self.d_model)
         h = h + self.pos_emb(positions)
-        print(h.shape)
-        print(mood_id.shape)
         cond = self.mood_emb(mood_id)
         h = h + cond
 
