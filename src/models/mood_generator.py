@@ -27,10 +27,11 @@ from src.core.utils import get_tokenizer, save_midi, top_k_top_p_sample
 from src.dataloaders import singleton_dataloader
 from src.dataloaders.singleton_dataloader import get_singleton_dataloader
 # from src.dataloaders.dataset_cached import get_cached_dataloader
-from src.dataloaders.modified_dataset_cached import get_modified_cached_dataloader
+# from src.dataloaders.modified_dataset_cached import get_modified_cached_dataloader
+from src.dataloaders.mood_dataset_cached import get_mood_cached_dataloader
 from src.models.general_model_handler import GeneralModelHandler
 
-class ModelGenerator(nn.Module):
+class MoodModelGenerator(nn.Module):
     def __init__(
         self,
         vocab_size: int,
@@ -40,8 +41,7 @@ class ModelGenerator(nn.Module):
         dim_feedforward: int = Config.DIM_FEEDFORWARD,
         dropout: float = Config.DROPOUT,
         max_seq_len: int = Config.MAX_SEQ_LEN,
-        num_moods: int = Config.NUM_MOODS,
-        num_genres: int = Config.NUM_GENRES,
+        num_moods: int = Config.NUM_MOODS + 1,
     ):
         super().__init__()
         self.d_model = d_model
@@ -53,7 +53,6 @@ class ModelGenerator(nn.Module):
 
         # ---- Conditioning embeddings (discrete) ----
         self.mood_emb = nn.Embedding(num_moods, d_model)
-        self.genre_emb = nn.Embedding(num_genres, d_model)
 
         # ---- Transformer stack (decoder-only, GPT-style) ----
         # We use TransformerEncoder (self-attention only) with a causal mask.
@@ -84,7 +83,6 @@ class ModelGenerator(nn.Module):
         nn.init.normal_(self.token_emb.weight, std=0.02)
         nn.init.normal_(self.pos_emb.weight, std=0.02)
         nn.init.normal_(self.mood_emb.weight, std=0.02)
-        nn.init.normal_(self.genre_emb.weight, std=0.02)
         nn.init.normal_(self.fc_out.weight, std=0.02)
         nn.init.zeros_(self.fc_out.bias)
 
@@ -93,14 +91,12 @@ class ModelGenerator(nn.Module):
         self,
         x: torch.Tensor,
         mood_id: torch.Tensor,
-        genre_id: torch.Tensor,
     ) -> torch.Tensor:
         """
         Parameters
         ----------
         x        : LongTensor  [B, S]   - input token ids
-        mood_id  : LongTensor  [B]      - mood category index
-        genre_id : LongTensor  [B]      - genre category index
+        mood_id  : LongTensor  [B, S]   - mood category index
 
         Returns
         -------
@@ -112,8 +108,9 @@ class ModelGenerator(nn.Module):
         positions = torch.arange(S, device=device).unsqueeze(0)
         h = self.token_emb(x) * math.sqrt(self.d_model)
         h = h + self.pos_emb(positions)
-
-        cond = self.mood_emb(mood_id).unsqueeze(1) + self.genre_emb(genre_id).unsqueeze(1)
+        print(h.shape)
+        print(mood_id.shape)
+        cond = self.mood_emb(mood_id)
         h = h + cond
 
         h = self.emb_norm(h)
@@ -125,25 +122,24 @@ class ModelGenerator(nn.Module):
         logits = self.fc_out(out)
         return logits
 
-class ModelGeneratorHandler(GeneralModelHandler):
-    MODEL_NAME = "generator_1"
+class MoodModelGeneratorHandler(GeneralModelHandler):
+    MODEL_NAME = "generator_2"
 
     def __init__(self, model: nn.Module, optimizer, criterion, scheduler):
         super().__init__(model, optimizer, scheduler, self.MODEL_NAME)
         self.criterion = criterion
 
     def train_step(self, batch):
-        tokens, moods, genres = batch
+        tokens, moods = batch
         
         tokens = tokens.to(self.device)
         moods = moods.to(self.device)
-        genres = genres.to(self.device)
         
-        inp = tokens[:, :-1]  # [B, SEQ_LEN-1]
-        tgt = tokens[:, 1:]    # [B, SEQ_LEN-1]
+        inp = tokens[:, :-1]    # [B, SEQ_LEN]
+        tgt = tokens[:, 1:]     # [B, SEQ_LEN]
 
         # Forward: model predicts logits for each position
-        logits = self.model(inp, moods, genres)  # [B, SEQ_LEN-1, vocab_size]
+        logits = self.model(inp, moods)  # [B, SEQ_LEN, vocab_size]
 
         # Loss calculation (Cross-Entropy):
         # 1. Reshape logits: [B, SEQ_LEN-1, vocab_size] -> [B*(SEQ_LEN-1), vocab_size]
@@ -157,46 +153,111 @@ class ModelGeneratorHandler(GeneralModelHandler):
 
         return loss
     
-    def generate(
-        self,
-        mood: str,
-        genre: str,
-        start: list[int] | None = None,
-        target_length: int = 4096,
-        temperature: float = Config.TEMPERATURE,
-        top_k: int = Config.TOP_K,
-        top_p: float = Config.TOP_P,
+    # def generate(
+    #     self,
+    #     mood: str,
+    #     genre: str,
+    #     start: list[int] | None = None,
+    #     target_length: int = 4096,
+    #     temperature: float = Config.TEMPERATURE,
+    #     top_k: int = Config.TOP_K,
+    #     top_p: float = Config.TOP_P,
+    # ):
+    #     self.model.eval()
+    #     self.model.to(self.device)
+
+    #     tokenizer = get_tokenizer()
+
+    #     if start is None or len(start) == 0:
+    #         bos_id = 1
+    #         if hasattr(tokenizer, "special_tokens_ids") and len(tokenizer.special_tokens_ids) > 1:
+    #             bos_id = tokenizer.special_tokens_ids[1]
+    #         bos_id = min(bos_id, self.model.vocab_size - 1)
+    #         start = [bos_id]
+
+    #     m_id = torch.tensor([Config.MOOD_TO_ID[mood]], device=self.device)
+    #     g_id = torch.tensor([Config.GENRE_TO_ID[genre]], device=self.device)
+    #     sequence = torch.tensor([start], dtype=torch.long, device=self.device)
+
+    #     progress = tqdm(range(target_length), desc="Generating MIDI")
+    #     with torch.no_grad():
+    #         for _ in progress:
+    #             ctx = sequence[:, -(Config.SEQ_LEN-1):]
+    #             logits = self.model(ctx, m_id, g_id)
+    #             next_logits = logits[:, -1, :]
+
+    #             next_token = top_k_top_p_sample(
+    #                 next_logits, top_k, top_p, temperature, self.model.vocab_size
+    #             )
+    #             next_token = torch.clamp(next_token, 0, self.model.vocab_size - 1)
+    #             sequence = torch.cat([sequence, next_token], dim=1)
+
+    #     return sequence.squeeze(0).cpu().tolist()
+    @torch.no_grad()
+    def generate_single_step(
+        self, 
+        current_tokens: torch.Tensor,                   # Tensor Shape: (1, seq_len)
+        target_mood_id: int,                            # Int: The mood you want for THIS specific step
+        uncond_mood_id: int = Config.NUM_MOODS,         # Int: Your unconditional/null mood ID
+        cfg_scale=3.0,                                  # Float: Guidance strength
+        temperature=1.05,                               # Float: Randomness/creativity
+        top_p=0.95,                                     # Float: Nucleus filtering threshold
+        # rep_penalty=1.15,                             # Float: Repetition penalty factor (> 1.0)
+        # rep_window=50                                 # Int: How many past tokens to look at for penalty
     ):
         self.model.eval()
         self.model.to(self.device)
-
-        tokenizer = get_tokenizer()
-
-        if start is None or len(start) == 0:
-            bos_id = 1
-            if hasattr(tokenizer, "special_tokens_ids") and len(tokenizer.special_tokens_ids) > 1:
-                bos_id = tokenizer.special_tokens_ids[1]
-            bos_id = min(bos_id, self.model.vocab_size - 1)
-            start = [bos_id]
-
-        m_id = torch.tensor([Config.MOOD_TO_ID[mood]], device=self.device)
-        g_id = torch.tensor([Config.GENRE_TO_ID[genre]], device=self.device)
-        sequence = torch.tensor([start], dtype=torch.long, device=self.device)
-
-        progress = tqdm(range(target_length), desc="Generating MIDI")
-        with torch.no_grad():
-            for _ in progress:
-                ctx = sequence[:, -(Config.SEQ_LEN-1):]
-                logits = self.model(ctx, m_id, g_id)
-                next_logits = logits[:, -1, :]
-
-                next_token = top_k_top_p_sample(
-                    next_logits, top_k, top_p, temperature, self.model.vocab_size
-                )
-                next_token = torch.clamp(next_token, 0, self.model.vocab_size - 1)
-                sequence = torch.cat([sequence, next_token], dim=1)
-
-        return sequence.squeeze(0).cpu().tolist()
+        
+        # 1. Build the mood sequences for the current context
+        # This floods the entire context window with your target mood to force the pivot
+        cond_mood_seq = torch.full((1, Config.SEQ_LEN), target_mood_id, dtype=torch.long, device=device)
+        uncond_mood_seq = torch.full((1, Config.SEQ_LEN), uncond_mood_id, dtype=torch.long, device=device)
+        
+        # 2. Dual Forward Pass for CFG
+        cond_logits = self.model(current_tokens, cond_mood_seq)[:, -1, :]
+        uncond_logits = self.model(current_tokens, uncond_mood_seq)[:, -1, :]
+        
+        # 3. Apply Classifier-Free Guidance
+        final_logits = uncond_logits + cfg_scale * (cond_logits - uncond_logits)
+        
+        # # 4. Apply Repetition Penalty
+        # if rep_penalty > 1.0:
+        #     # Look only at the most recent tokens up to rep_window
+        #     recent_tokens = current_tokens[0, -rep_window:].tolist()
+        #     for token in set(recent_tokens):
+        #         # If logit is positive, divide to reduce it. If negative, multiply to make it more negative.
+        #         if final_logits[0, token] > 0:
+        #             final_logits[0, token] /= rep_penalty
+        #         else:
+        #             final_logits[0, token] *= rep_penalty
+                    
+        # 5. Apply Temperature
+        final_logits = final_logits / temperature
+        
+        # 6. Apply Top-p (Nucleus) Filtering
+        probs = F.softmax(final_logits, dim=-1)
+        sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+        
+        # Remove tokens with cumulative probability above the threshold
+        sorted_indices_to_remove = cumulative_probs > top_p
+        # Shift indices to the right to keep the first token above the threshold
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = 0
+        
+        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+        probs[indices_to_remove] = 0.0
+        
+        # Renormalize the probabilities so they sum to 1.0 again
+        probs = probs / probs.sum(dim=-1, keepdim=True)
+        
+        # 7. Sample the next token
+        next_token = torch.multinomial(probs, num_samples=1)
+        
+        # 8. Append to the sequence
+        updated_tokens = torch.cat((current_tokens, next_token), dim=1)
+        
+        return updated_tokens, next_token
     
 if __name__ == "__main__":
     device = Config.DEVICE
@@ -209,22 +270,21 @@ if __name__ == "__main__":
 
     ## TO BE IMPLEMENTED
     # dataloader = get_full_dataloader()
-    dataloader = get_modified_cached_dataloader(
+    dataloader = get_mood_cached_dataloader(
         batch_size=Config.BATCH_SIZE,
         num_workers=Config.NUM_WORKERS,
         persistent_workers=Config.PERSISTENT_WORKERS,
         prefetch_factor=Config.PREFETCH_FACTOR,
-        sample_factor=1.0
+        sample_factor=0.2
     )
     
     print(f"Batches per epoch: {len(dataloader)}")
     print(f"Using {Config.NUM_WORKERS} parallel workers for data loading")
 
     # ---- Model ----
-    model = ModelGenerator(
+    model = MoodModelGenerator(
         vocab_size=vocab_size,
         num_moods=Config.NUM_MOODS,
-        num_genres=Config.NUM_GENRES,
     ).to(device)
 
     optimizer = torch.optim.AdamW(
@@ -239,7 +299,7 @@ if __name__ == "__main__":
     
     criterion = nn.CrossEntropyLoss(ignore_index=0) 
     
-    handler = ModelGeneratorHandler(
+    handler = MoodModelGeneratorHandler(
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
@@ -252,6 +312,15 @@ if __name__ == "__main__":
     handler.train(dataloader=dataloader, epochs=10)
     # handler.load_checkpoint(epoch=9)
 
-    generated_tokens = handler.generate(mood="romantic", genre="country")
-    print(generated_tokens[:20])
+    current_tokens = torch.tensor([[1]], device=Config.DEVICE)
+    current_mood = Config.MOOD_TO_ID["romantic"]
+    target_length = 4096
+    for step in range(target_length):
+        if step == 2048:
+            current_mood = Config.MOOD_TO_ID["warm"]
+        current_tokens, next_token = handler.generate_single_step(current_tokens, current_mood)
+
+    generated_tokens = current_tokens.squeeze(0).cpu().tolist()
+    print(generated_tokens[0:20])
+    print(generated_tokens[2048:2068])
     save_midi(generated_tokens, tokenizer, "generated_midi.mid")
