@@ -284,7 +284,6 @@ if __name__ == "__main__":
     # ---- Model ----
     model = MoodModelGenerator(
         vocab_size=vocab_size,
-        num_moods=Config.NUM_MOODS,
     ).to(device)
 
     optimizer = torch.optim.AdamW(
