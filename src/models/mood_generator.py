@@ -105,6 +105,21 @@ class MoodModelGenerator(nn.Module):
         B, S = x.shape
         device = x.device
 
+        # Keep conditioning length aligned with token sequence length.
+        # This makes generation robust when context windows are shorter/longer.
+        if mood_id.dim() == 1:
+            mood_id = mood_id.unsqueeze(1)
+        if mood_id.size(0) != B:
+            raise ValueError(f"Batch mismatch: x has batch {B}, mood_id has batch {mood_id.size(0)}")
+        if mood_id.size(1) != S:
+            if mood_id.size(1) == 1:
+                mood_id = mood_id.expand(B, S)
+            elif mood_id.size(1) > S:
+                mood_id = mood_id[:, -S:]
+            else:
+                pad = mood_id[:, -1:].expand(B, S - mood_id.size(1))
+                mood_id = torch.cat([mood_id, pad], dim=1)
+
         positions = torch.arange(S, device=device).unsqueeze(0)
         h = self.token_emb(x) * math.sqrt(self.d_model)
         h = h + self.pos_emb(positions)
@@ -198,22 +213,23 @@ class MoodModelGeneratorHandler(GeneralModelHandler):
         target_mood_id: int,                            # Int: The mood you want for THIS specific step
         uncond_mood_id: int = Config.NUM_MOODS,         # Int: Your unconditional/null mood ID
         cfg_scale=3.0,                                  # Float: Guidance strength
-        temperature=1.05,                               # Float: Randomness/creativity
+        temperature=1.20,                               # Float: Randomness/creativity
         top_p=0.95,                                     # Float: Nucleus filtering threshold
         # rep_penalty=1.15,                             # Float: Repetition penalty factor (> 1.0)
         # rep_window=50                                 # Int: How many past tokens to look at for penalty
     ):
         self.model.eval()
         self.model.to(self.device)
-        
-        # 1. Build the mood sequences for the current context
-        # This floods the entire context window with your target mood to force the pivot
-        cond_mood_seq = torch.full((1, Config.SEQ_LEN), target_mood_id, dtype=torch.long, device=device)
-        uncond_mood_seq = torch.full((1, Config.SEQ_LEN), uncond_mood_id, dtype=torch.long, device=device)
-        
+
+        # Keep generation context inside model max length and align conditioning.
+        ctx_len = min(current_tokens.size(1), Config.SEQ_LEN)
+        ctx = current_tokens[:, -ctx_len:].to(self.device)
+        cond_mood_seq = torch.full((1, ctx_len), target_mood_id, dtype=torch.long, device=self.device)
+        uncond_mood_seq = torch.full((1, ctx_len), uncond_mood_id, dtype=torch.long, device=self.device)
+
         # 2. Dual Forward Pass for CFG
-        cond_logits = self.model(current_tokens, cond_mood_seq)[:, -1, :]
-        uncond_logits = self.model(current_tokens, uncond_mood_seq)[:, -1, :]
+        cond_logits = self.model(ctx, cond_mood_seq)[:, -1, :]
+        uncond_logits = self.model(ctx, uncond_mood_seq)[:, -1, :]
         
         # 3. Apply Classifier-Free Guidance
         final_logits = uncond_logits + cfg_scale * (cond_logits - uncond_logits)
@@ -273,7 +289,7 @@ if __name__ == "__main__":
         num_workers=Config.NUM_WORKERS,
         persistent_workers=Config.PERSISTENT_WORKERS,
         prefetch_factor=Config.PREFETCH_FACTOR,
-        sample_factor=0.2
+        # sample_factor=1.0
     )
     
     print(f"Batches per epoch: {len(dataloader)}")
@@ -306,18 +322,18 @@ if __name__ == "__main__":
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Generator parameters: {total_params:,}")
     
-    handler.train(dataloader=dataloader, epochs=10)
-    # handler.load_checkpoint(epoch=9)
+    handler.train(dataloader=dataloader, epochs=32)
+    # handler.load_checkpoint()
 
-    current_tokens = torch.tensor([[1]], device=Config.DEVICE)
-    current_mood = Config.MOOD_TO_ID["romantic"]
-    target_length = 4096
-    for step in range(target_length):
-        if step == 2048:
-            current_mood = Config.MOOD_TO_ID["warm"]
-        current_tokens, next_token = handler.generate_single_step(current_tokens, current_mood)
+    # current_tokens = torch.tensor([[1]], device=Config.DEVICE)
+    # current_mood = Config.MOOD_TO_ID["romantic"]
+    # target_length = 4096
+    # for step in tqdm(range(target_length), desc="Generating MIDI"):
+    #     if step == 2048:
+    #         current_mood = Config.MOOD_TO_ID["warm"]
+    #     current_tokens, next_token = handler.generate_single_step(current_tokens, current_mood)
 
-    generated_tokens = current_tokens.squeeze(0).cpu().tolist()
-    print(generated_tokens[0:20])
-    print(generated_tokens[2048:2068])
-    save_midi(generated_tokens, tokenizer, "generated_midi.mid")
+    # generated_tokens = current_tokens.squeeze(0).cpu().tolist()
+    # print(generated_tokens[0:20])
+    # print(generated_tokens[2048:2068])
+    # save_midi(generated_tokens, tokenizer, "generated_midi.mid")

@@ -57,16 +57,19 @@ class MoodCachedDataset(Dataset):
         # Load pre-tokenized sequence (FAST - just numpy load)
         token_ids = np.load(npy_path).astype(np.int64).tolist()
 
-        # Pad / random-crop to seq_len
+        target_len = self.seq_len + 1
+
+        # Pad / random-crop to a fixed target length
         if len(token_ids) == 0:
-            token_ids = [0] * (self.seq_len + 1)
-        elif len(token_ids) < (self.seq_len + 1):
-            token_ids = token_ids + [0] * ((self.seq_len + 1) - len(token_ids))
-        elif len(token_ids) > (self.seq_len + 1):
+            token_ids = [0] * target_len
+        elif len(token_ids) < target_len:
+            token_ids = token_ids + [0] * (target_len - len(token_ids))
+        elif len(token_ids) > target_len:
             # Random crop for data augmentation
-            start = np.random.randint(0, len(token_ids) - self.seq_len + 1)
-            token_ids = token_ids[start : start + (self.seq_len + 1)]
-        # else: len(token_ids) == self.seq_len, use as-is
+            max_start = len(token_ids) - target_len
+            start = np.random.randint(0, max_start + 1)
+            token_ids = token_ids[start : start + target_len]
+        # else: len(token_ids) == target_len, use as-is
 
         chance = random()
         if chance < 0.15:
