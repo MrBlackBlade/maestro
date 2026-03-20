@@ -210,6 +210,7 @@ class MoodModelGeneratorHandler(GeneralModelHandler):
     def generate_single_step(
         self, 
         current_tokens: torch.Tensor,                   # Tensor Shape: (1, seq_len)
+        current_moods: torch.Tensor,                    # Tensor Shape: (1, seq_len)
         target_mood_id: int,                            # Int: The mood you want for THIS specific step
         uncond_mood_id: int = Config.NUM_MOODS,         # Int: Your unconditional/null mood ID
         cfg_scale=3.0,                                  # Float: Guidance strength
@@ -222,9 +223,22 @@ class MoodModelGeneratorHandler(GeneralModelHandler):
         self.model.to(self.device)
 
         # Keep generation context inside model max length and align conditioning.
+
+        # Current Context Window Size
         ctx_len = min(current_tokens.size(1), Config.SEQ_LEN)
+
+        # Current Context Window
+        # 1.1 Input Tokens
         ctx = current_tokens[:, -ctx_len:].to(self.device)
-        cond_mood_seq = torch.full((1, ctx_len), target_mood_id, dtype=torch.long, device=self.device)
+
+        # 1.2 Input Moods
+        # input_mood_seq = current_moods[:, -ctx_len:-1].to(self.device)
+        # target_mood_seq = torch.full((1, 1), target_mood_id, dtype=torch.long, device=self.device)
+
+        # 1.3 Target Mood
+        # cond_mood_seq = torch.full((1, ctx_len), target_mood_id, dtype=torch.long, device=self.device)
+        # cond_mood_seq = torch.cat((input_mood_seq, target_mood_seq), dim=1)
+        cond_mood_seq = current_moods[:, -ctx_len:].to(self.device)
         uncond_mood_seq = torch.full((1, ctx_len), uncond_mood_id, dtype=torch.long, device=self.device)
 
         # 2. Dual Forward Pass for CFG
@@ -267,11 +281,12 @@ class MoodModelGeneratorHandler(GeneralModelHandler):
         
         # 7. Sample the next token
         next_token = torch.multinomial(probs, num_samples=1)
+        next_mood = torch.full((1, 1), target_mood_id, dtype=torch.long, device=self.device)
         
         # 8. Append to the sequence
         updated_tokens = torch.cat((current_tokens, next_token), dim=1)
-        
-        return updated_tokens, next_token
+        updated_moods = torch.cat((current_moods, next_mood), dim=1)
+        return updated_tokens, updated_moods, next_token
     
 if __name__ == "__main__":
     device = Config.DEVICE
@@ -322,18 +337,22 @@ if __name__ == "__main__":
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Generator parameters: {total_params:,}")
     
-    handler.train(dataloader=dataloader, epochs=32)
-    # handler.load_checkpoint()
+    # handler.train(dataloader=dataloader, epochs=32)
+    handler.load_checkpoint()
 
-    # current_tokens = torch.tensor([[1]], device=Config.DEVICE)
-    # current_mood = Config.MOOD_TO_ID["romantic"]
-    # target_length = 4096
-    # for step in tqdm(range(target_length), desc="Generating MIDI"):
-    #     if step == 2048:
-    #         current_mood = Config.MOOD_TO_ID["warm"]
-    #     current_tokens, next_token = handler.generate_single_step(current_tokens, current_mood)
+    current_tokens = torch.tensor([[1]], device=Config.DEVICE)
+    target_mood_id = Config.MOOD_TO_ID["romantic"]
+    current_moods = torch.tensor([[target_mood_id]], device=Config.DEVICE)
+    target_length = 4096
+    for step in tqdm(range(target_length), desc="Generating MIDI"):
+        if step == 2048:
+            target_mood_id = Config.MOOD_TO_ID["angry"]
+        current_tokens, current_moods, next_token = handler.generate_single_step(current_tokens, current_moods, target_mood_id)
 
-    # generated_tokens = current_tokens.squeeze(0).cpu().tolist()
+    generated_tokens = current_tokens.squeeze(0).cpu().tolist()
+    generated_moods = current_moods.squeeze(0).cpu().tolist()
     # print(generated_tokens[0:20])
     # print(generated_tokens[2048:2068])
-    # save_midi(generated_tokens, tokenizer, "generated_midi.mid")
+    # print(generated_moods[0:16])
+    print(generated_moods[2040:2056])
+    save_midi(generated_tokens, tokenizer, "generated_midi.mid")
