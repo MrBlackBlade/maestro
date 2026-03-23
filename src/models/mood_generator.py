@@ -337,22 +337,30 @@ if __name__ == "__main__":
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Generator parameters: {total_params:,}")
     
-    # handler.train(dataloader=dataloader, epochs=32)
+    # If there's no saved checkpoint yet, train briefly so real-time playback works.
+    ckpt_path = handler.ckpt_dir / f"{handler.model_name}_best.pt"
+    if not ckpt_path.exists():
+        quick_epochs = 1
+        print(f"Checkpoint not found at {ckpt_path}. Training for {quick_epochs} epoch(s)...")
+        handler.train(dataloader=dataloader, epochs=quick_epochs)
+
     handler.load_checkpoint()
+
+    from src.core.realtime_player import RealtimeMidiPlayer
+
+    player = RealtimeMidiPlayer(tokenizer, bpm=120)
 
     current_tokens = torch.tensor([[1]], device=Config.DEVICE)
     target_mood_id = Config.MOOD_TO_ID["romantic"]
     current_moods = torch.tensor([[target_mood_id]], device=Config.DEVICE)
     target_length = 4096
-    for step in tqdm(range(target_length), desc="Generating MIDI"):
+    for step in tqdm(range(target_length), desc="Generating MIDI (live playback)"):
         if step == 2048:
             target_mood_id = Config.MOOD_TO_ID["angry"]
         current_tokens, current_moods, next_token = handler.generate_single_step(current_tokens, current_moods, target_mood_id)
+        player.feed_token(next_token.item())
+
+    player.close()
 
     generated_tokens = current_tokens.squeeze(0).cpu().tolist()
-    generated_moods = current_moods.squeeze(0).cpu().tolist()
-    # print(generated_tokens[0:20])
-    # print(generated_tokens[2048:2068])
-    # print(generated_moods[0:16])
-    print(generated_moods[2040:2056])
     save_midi(generated_tokens, tokenizer, "generated_midi.mid")

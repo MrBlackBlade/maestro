@@ -1,19 +1,22 @@
 import sys
 import os
+import base64
 import tempfile
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 import torch
 import torch.nn.functional as F
 
 # Ensure project root is importable
-# sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.core.config import Config
-from src.models.generator import ModelGenerator
+from src.models.mood_generator import MoodModelGenerator
 from src.models.refiner import ModelRefiner
 from src.core.utils import get_tokenizer
+from src.core.realtime_player import RealtimeMidiPlayer
 
 # ======================================================================
 # Page config
@@ -28,18 +31,17 @@ DEVICE = Config.DEVICE
 
 @st.cache_resource
 def load_generator():
-    """Load the Generator checkpoint independently."""
-    ckpt_path = Config.GENERATOR_CKPT_DIR / "generator_best.pt"
-    if not ckpt_path.exists():
-        ckpt_path = Config.GENERATOR_CKPT_DIR / "generator_latest.pt"
+    """Load the mood-only generator_2 checkpoint independently."""
+    ckpt_path = Config.MODEL_CKPT_DIR / "generator_2" / "generator_2_best.pt"
     if not ckpt_path.exists():
         return None
 
     checkpoint = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
-    model = ModelGenerator(
-        vocab_size=checkpoint["vocab_size"],
-        num_moods=checkpoint["num_moods"],
-        num_genres=checkpoint["num_genres"],
+
+    vocab_size = checkpoint["model_state_dict"]["token_emb.weight"].shape[0]
+    model = MoodModelGenerator(
+        vocab_size=vocab_size,
+        num_moods=Config.NUM_MOODS + 1,
     ).to(DEVICE)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -69,6 +71,53 @@ def load_refiner():
 @st.cache_resource
 def load_tokenizer():
     return get_tokenizer(Config.TOKENIZER_PARAMS_PATH)
+
+
+# ======================================================================
+# Streaming helpers
+# ======================================================================
+STREAM_INTERVAL = 128  # Decode + refresh the live player every N tokens
+
+
+def _build_autoplay_player_html(midi_bytes: bytes) -> str:
+    """Return a minimal html-midi-player snippet that autoplays the given MIDI bytes."""
+    midi_b64 = base64.b64encode(midi_bytes).decode("utf-8")
+    uri = f"data:audio/midi;base64,{midi_b64}"
+    return f"""
+    <script src="https://cdn.jsdelivr.net/combine/npm/tone@14.7.77,npm/@magenta/music@1.23.1/es6/core.js,npm/html-midi-player@1.5.0"></script>
+    <style>
+      midi-player {{ display: block; width: 100%; }}
+      midi-player::part(control-panel) {{ background: #1a1a2e; border: 1px solid #333; border-radius: 8px; }}
+      midi-player::part(play-button) {{ color: #1db954; border: 2px solid #1db954; border-radius: 50%; }}
+    </style>
+    <midi-player src="{uri}" sound-font autoplay></midi-player>
+    """
+
+
+def render_partial_player(placeholder, token_ids: list, tokenizer, tokenizer_vocab_size: int) -> None:
+    """
+    Decode token_ids to MIDI and render an autoplaying preview inside *placeholder*.
+    Silently skips if the partial sequence cannot produce a valid MIDI object.
+    """
+    safe_ids = [min(max(tid, 0), tokenizer_vocab_size - 1) for tid in token_ids]
+    try:
+        midi_obj = tokenizer(safe_ids)
+        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as tmp:
+            ppath = tmp.name
+        midi_obj.dump_midi(ppath)
+        with open(ppath, "rb") as f:
+            midi_bytes = f.read()
+        try:
+            os.unlink(ppath)
+        except Exception:
+            pass
+        if len(midi_bytes) < 20:          # empty / header-only MIDI — skip
+            return
+        player_html = _build_autoplay_player_html(midi_bytes)
+        with placeholder:
+            components.html(player_html, height=90)
+    except Exception:
+        pass  # partial sequence may not yet contain complete notes
 
 
 # ======================================================================
@@ -196,34 +245,38 @@ if generate_btn:
         # because MidiTok might have gaps or non-contiguous token IDs
         st.info(f"✓ Vocabulary sizes match: {model_vocab_size} tokens")
 
-    # ---- 1. GENERATE DRAFT ----
-    st.subheader("1️⃣ Generating draft...")
+    # ---- 1. GENERATE DRAFT (with real-time audio playback) ----
+    st.subheader("1️⃣ Generating draft…")
     progress = st.progress(0)
     status_text = st.empty()
 
+    st.caption("🎵 **Real-time playback** — notes play through your speakers as tokens are generated.")
+
     m_id = torch.tensor([mood_id], device=DEVICE)
-    g_id = torch.tensor([genre_id], device=DEVICE)
 
     # Start with BOS token (id=1 in most tokenizers, fallback to 1)
     bos_id = tokenizer.special_tokens_ids[1] if hasattr(tokenizer, "special_tokens_ids") else 1
-    # Ensure BOS token is valid
     bos_id = min(bos_id, tokenizer_vocab_size - 1)
     sequence = torch.tensor([[bos_id]], dtype=torch.long, device=DEVICE)
 
+    player = RealtimeMidiPlayer(tokenizer, bpm=120)
+
     with torch.no_grad():
         for i in range(generate_length):
-            # Sliding window: keep last MAX_SEQ_LEN tokens
             ctx = sequence[:, -Config.MAX_SEQ_LEN :]
-            logits = gen_model(ctx, m_id, g_id)
-            next_logits = logits[:, -1, :]  # last position
+            logits = gen_model(ctx, m_id)
+            next_logits = logits[:, -1, :]
             next_token = top_k_top_p_sample(next_logits, top_k, top_p, temperature, tokenizer_vocab_size)
-            # Clamp token to valid range
             next_token = torch.clamp(next_token, 0, tokenizer_vocab_size - 1)
             sequence = torch.cat([sequence, next_token], dim=1)
+
+            player.feed_token(next_token.item())
 
             if (i + 1) % 10 == 0 or i == generate_length - 1:
                 progress.progress((i + 1) / generate_length)
                 status_text.text(f"Generated {i + 1}/{generate_length} tokens")
+
+    player.close()
 
     draft_ids = sequence[0].cpu().tolist()
     # Validate all token IDs are in valid range
@@ -233,20 +286,17 @@ if generate_btn:
     # ---- 2. REFINE (optional) ----
     if use_refiner and ref_model is not None:
         st.subheader("2️⃣ Refining & polishing...")
+        g_id = torch.tensor([genre_id], device=DEVICE)
         refined = sequence.clone()
         with torch.no_grad():
             for p in range(refiner_passes):
                 del_logits, tok_logits = ref_model(refined, m_id, g_id)
-                # Clamp logits to valid vocabulary size
                 if tok_logits.size(-1) > tokenizer_vocab_size:
                     tok_logits = tok_logits[:, :, :tokenizer_vocab_size]
-                # Replace every position with the refiner's top prediction
-                refined = torch.argmax(tok_logits, dim=-1)  # [B, S]
-                # Clamp to valid range
+                refined = torch.argmax(tok_logits, dim=-1)
                 refined = torch.clamp(refined, 0, tokenizer_vocab_size - 1)
                 st.text(f"  Refiner pass {p + 1}/{refiner_passes} done")
         final_ids = refined[0].cpu().tolist()
-        # Validate all token IDs are in valid range
         final_ids = [min(max(tid, 0), tokenizer_vocab_size - 1) for tid in final_ids]
     else:
         final_ids = draft_ids
@@ -264,8 +314,6 @@ if generate_btn:
             f"are outside valid range [0, {tokenizer_vocab_size - 1}]. "
             f"First few invalid IDs: {invalid_ids[:10]}"
         )
-        # Filter out invalid IDs (replace with a safe token)
-        # Use BOS token if available and valid, otherwise use token 0 (PAD)
         safe_token = bos_id if 0 <= bos_id < tokenizer_vocab_size else 0
         final_ids = [tid if 0 <= tid < tokenizer_vocab_size else safe_token for tid in final_ids]
         st.warning(f"Replaced {len(invalid_ids)} invalid token IDs with safe token {safe_token}")
@@ -275,11 +323,83 @@ if generate_btn:
         midi_obj = tokenizer(final_ids)
         with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as tmp:
             midi_path = tmp.name
-            midi_obj.dump_midi(midi_path)
+        midi_obj.dump_midi(midi_path)
 
-        # Download button
+        # Read MIDI bytes for both playback and download
         with open(midi_path, "rb") as f:
             midi_bytes = f.read()
+
+        # Base64-encode MIDI for in-browser player
+        midi_b64 = base64.b64encode(midi_bytes).decode("utf-8")
+        midi_data_uri = f"data:audio/midi;base64,{midi_b64}"
+
+        # Embed html-midi-player web component (Tone.js synth, zero deps)
+        player_html = f"""
+        <script
+          src="https://cdn.jsdelivr.net/combine/npm/tone@14.7.77,npm/@magenta/music@1.23.1/es6/core.js,npm/html-midi-player@1.5.0"
+        ></script>
+        <style>
+          midi-player {{
+            display: block;
+            width: 100%;
+            margin-bottom: 8px;
+          }}
+          midi-player::part(control-panel) {{
+            background: #1a1a2e;
+            border: 1px solid #333;
+            border-radius: 8px;
+          }}
+          midi-player::part(play-button) {{
+            color: #1db954;
+            border: 2px solid #1db954;
+            border-radius: 50%;
+            transition: all 0.2s;
+          }}
+          midi-player::part(play-button):hover {{
+            background: #1db954;
+            color: #fff;
+          }}
+          midi-player::part(time) {{
+            color: #e0e0e0;
+            font-family: 'Segoe UI', sans-serif;
+          }}
+          midi-visualizer {{
+            display: block;
+            width: 100%;
+            overflow-x: auto;
+          }}
+          midi-visualizer .piano-roll-visualizer {{
+            background: #0d1117;
+            border: 1px solid #333;
+            border-radius: 8px;
+            overflow: hidden;
+          }}
+          midi-visualizer svg rect.note {{
+            opacity: 0.85;
+            rx: 2;
+            ry: 2;
+          }}
+          midi-visualizer svg rect.note[data-is-active="true"] {{
+            opacity: 1;
+            stroke: #1db954;
+            stroke-width: 1.5;
+          }}
+        </style>
+        <midi-player
+          src="{midi_data_uri}"
+          sound-font
+          autoplay
+          visualizer="#myVisualizer"
+        ></midi-player>
+        <midi-visualizer
+          type="piano-roll"
+          id="myVisualizer"
+          src="{midi_data_uri}"
+        ></midi-visualizer>
+        """
+        components.html(player_html, height=480, scrolling=True)
+
+        # Download button (fallback)
         st.download_button(
             label="⬇️ Download MIDI",
             data=midi_bytes,
@@ -287,44 +407,9 @@ if generate_btn:
             mime="audio/midi",
         )
 
-        # Try to play audio (requires midi2audio + FluidSynth)
-        try:
-            from midi2audio import FluidSynth
-
-            # Common soundfont locations
-            sf_candidates = [
-                Path(__file__).parent / "soundfonts" / "FluidR3_GM.sf2",
-                Path(__file__).parent / "soundfonts" / "soundfont.sf2",
-                Path(r"C:\soundfonts\FluidR3_GM.sf2"),
-            ]
-            sf_path = None
-            for candidate in sf_candidates:
-                if candidate.exists():
-                    sf_path = str(candidate)
-                    break
-
-            if sf_path:
-                wav_path = midi_path.replace(".mid", ".wav")
-                fs = FluidSynth(sf_path)
-                fs.midi_to_audio(midi_path, wav_path)
-                st.audio(wav_path, format="audio/wav")
-            else:
-                st.info(
-                    "💡 To hear audio in-browser, place a SoundFont file "
-                    "(e.g. `FluidR3_GM.sf2`) in the project root and install FluidSynth."
-                )
-        except ImportError:
-            st.info(
-                "💡 Install `midi2audio` and FluidSynth for in-browser playback: "
-                "`pip install midi2audio`"
-            )
-
-        # Clean up temp files
+        # Clean up temp file
         try:
             os.unlink(midi_path)
-            wav_path_check = midi_path.replace(".mid", ".wav")
-            if os.path.exists(wav_path_check):
-                os.unlink(wav_path_check)
         except Exception:
             pass
 
