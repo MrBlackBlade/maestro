@@ -31,6 +31,8 @@ from src.dataloaders.singleton_dataloader import get_singleton_dataloader
 from src.dataloaders.mood_dataset_cached import get_mood_cached_dataloader
 from src.models.general_model_handler import GeneralModelHandler
 
+from src.core.audio_engine import AudioEngine
+
 class MoodModelGenerator(nn.Module):
     def __init__(
         self,
@@ -338,21 +340,31 @@ if __name__ == "__main__":
     print(f"Generator parameters: {total_params:,}")
     
     # handler.train(dataloader=dataloader, epochs=32)
-    handler.load_checkpoint()
+    handler.load_checkpoint(epoch=26)
+
+    audio_engine = AudioEngine(
+        soundfont=Config.PROJECT_ROOT / "FluidR3_GM.sf2",
+        sample_rate=48000,
+        bar_duration=2,
+    )
+
 
     current_tokens = torch.tensor([[1]], device=Config.DEVICE)
-    target_mood_id = Config.MOOD_TO_ID["romantic"]
+    audio_engine.push_token(1)
+    target_mood_id = Config.MOOD_TO_ID["magnificent"]
     current_moods = torch.tensor([[target_mood_id]], device=Config.DEVICE)
     target_length = 4096
     for step in tqdm(range(target_length), desc="Generating MIDI"):
-        if step == 2048:
-            target_mood_id = Config.MOOD_TO_ID["angry"]
+        if step == 1024:
+            target_mood_id = Config.MOOD_TO_ID["quiet"]
         current_tokens, current_moods, next_token = handler.generate_single_step(current_tokens, current_moods, target_mood_id)
+        audio_engine.push_token(next_token.item())
+    audio_engine.push_token(4, stop=True)
 
     generated_tokens = current_tokens.squeeze(0).cpu().tolist()
-    generated_moods = current_moods.squeeze(0).cpu().tolist()
+    # generated_moods = current_moods.squeeze(0).cpu().tolist()
     # print(generated_tokens[0:20])
     # print(generated_tokens[2048:2068])
     # print(generated_moods[0:16])
-    print(generated_moods[2040:2056])
+    # print(generated_moods[2040:2056])
     save_midi(generated_tokens, tokenizer, "generated_midi.mid")
