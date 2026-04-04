@@ -29,6 +29,11 @@ from src.dataloaders.singleton_dataloader import get_singleton_dataloader
 # from src.dataloaders.dataset_cached import get_cached_dataloader
 from src.dataloaders.modified_dataset_cached import get_modified_cached_dataloader
 from src.models.general_model_handler import GeneralModelHandler
+from src.models.cached_transformer import (
+    CachedTransformerEncoderLayer,
+    CachedTransformerEncoder,
+    KVCache,
+)
 
 class ModelGenerator(nn.Module):
     def __init__(
@@ -56,10 +61,9 @@ class ModelGenerator(nn.Module):
         self.genre_emb = nn.Embedding(num_genres, d_model)
 
         # ---- Transformer stack (decoder-only, GPT-style) ----
-        # We use TransformerEncoder (self-attention only) with a causal mask.
-        # NOT TransformerDecoder, which has cross-attention that would leak
-        # future information through the unmasked memory path.
-        encoder_layer = nn.TransformerEncoderLayer(
+        # CachedTransformerEncoder is a drop-in for nn.TransformerEncoder
+        # that threads an optional KVCache through each layer during inference.
+        encoder_layer = CachedTransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
@@ -67,7 +71,7 @@ class ModelGenerator(nn.Module):
             batch_first=True,
             norm_first=True,
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.transformer = CachedTransformerEncoder(encoder_layer, num_layers=num_layers)
 
         # ---- Output projection ----
         self.fc_out = nn.Linear(d_model, vocab_size)
@@ -94,22 +98,26 @@ class ModelGenerator(nn.Module):
         x: torch.Tensor,
         mood_id: torch.Tensor,
         genre_id: torch.Tensor,
+        kv_cache: KVCache | None = None,
+        start_pos: int = 0,
     ) -> torch.Tensor:
         """
         Parameters
         ----------
-        x        : LongTensor  [B, S]   - input token ids
-        mood_id  : LongTensor  [B]      - mood category index
-        genre_id : LongTensor  [B]      - genre category index
+        x         : LongTensor  [B, S]   - input token ids
+        mood_id   : LongTensor  [B]      - mood category index
+        genre_id  : LongTensor  [B]      - genre category index
+        kv_cache  : optional KVCache for cached inference (None = training)
+        start_pos : positional-embedding offset for the first token in ``x``
 
         Returns
         -------
-        logits   : FloatTensor [B, S, vocab_size]
+        logits    : FloatTensor [B, S, vocab_size]
         """
         B, S = x.shape
         device = x.device
 
-        positions = torch.arange(S, device=device).unsqueeze(0)
+        positions = torch.arange(start_pos, start_pos + S, device=device).unsqueeze(0)
         h = self.token_emb(x) * math.sqrt(self.d_model)
         h = h + self.pos_emb(positions)
 
@@ -119,8 +127,10 @@ class ModelGenerator(nn.Module):
         h = self.emb_norm(h)
         h = self.drop(h)
 
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(S, device=device)
-        out = self.transformer(h, mask=causal_mask, is_causal=True)
+        if kv_cache is not None:
+            out = self.transformer(h, kv_cache=kv_cache)
+        else:
+            out = self.transformer(h, is_causal=True)
 
         logits = self.fc_out(out)
         return logits
@@ -183,13 +193,26 @@ class ModelGeneratorHandler(GeneralModelHandler):
         g_id = torch.tensor([Config.GENRE_TO_ID[genre]], device=self.device)
         sequence = torch.tensor([start], dtype=torch.long, device=self.device)
 
-        progress = tqdm(range(target_length), desc="Generating MIDI")
-        with torch.no_grad():
-            for _ in progress:
-                ctx = sequence[:, -(Config.SEQ_LEN-1):]
-                logits = self.model(ctx, m_id, g_id)
-                next_logits = logits[:, -1, :]
+        cache = KVCache.from_model(self.model) if Config.USE_KV_CACHE else None
 
+        progress = tqdm(range(target_length), desc="Generating MIDI")
+        with torch.inference_mode():
+            for _ in progress:
+                if cache is not None:
+                    if cache.is_full():
+                        cache.reset()
+                        refill_len = min(sequence.size(1), Config.MAX_SEQ_LEN // 2)
+                        ctx = sequence[:, -refill_len:]
+                        start_pos = 0
+                    else:
+                        ctx = sequence[:, -1:]
+                        start_pos = cache.seq_len
+                    logits = self.model(ctx, m_id, g_id, kv_cache=cache, start_pos=start_pos)
+                else:
+                    ctx = sequence[:, -(Config.SEQ_LEN - 1):]
+                    logits = self.model(ctx, m_id, g_id)
+
+                next_logits = logits[:, -1, :]
                 next_token = top_k_top_p_sample(
                     next_logits, top_k, top_p, temperature, self.model.vocab_size
                 )

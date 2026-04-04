@@ -55,6 +55,7 @@ from miditok import TokSequence
 from src.core.config import Config
 from src.core.utils import get_tokenizer, save_midi
 from src.models.mood_generator import MoodModelGenerator, MoodModelGeneratorHandler
+from src.models.cached_transformer import KVCache
 
 # ── FluidSynth / playback settings ──────────────────────────────────────────
 # SoundFont is loaded strictly from the project root.
@@ -214,6 +215,13 @@ def generation_worker(handler: MoodModelGeneratorHandler, state: GenerationState
     more than MAX_BARS_AHEAD bars behind.
     """
     state.running = True
+    handler.model.eval()
+
+    if Config.USE_KV_CACHE:
+        cond_cache = KVCache.from_model(handler.model)
+        uncond_cache = KVCache.from_model(handler.model)
+    else:
+        cond_cache = uncond_cache = None
 
     # Accumulator for the current bar's token ids.  Flushed into the
     # bar_queue every time a BAR_TOKEN_ID is generated.
@@ -231,7 +239,8 @@ def generation_worker(handler: MoodModelGeneratorHandler, state: GenerationState
 
             # 3. Run one autoregressive step: predict the next token.
             tokens, moods, next_token = handler.generate_single_step(
-                tokens, moods, mood_id
+                tokens, moods, mood_id,
+                cond_cache=cond_cache, uncond_cache=uncond_cache,
             )
             next_id = next_token.item()
 

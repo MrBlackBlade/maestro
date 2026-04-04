@@ -11,6 +11,7 @@ Key design choices
 * KV-cache friendly: during inference you can call the model with just the
   last token and manually manage the cache (not shown here but trivial to add).
 """
+import argparse
 import math
 import torch
 import torch.nn as nn
@@ -30,8 +31,11 @@ from src.dataloaders.singleton_dataloader import get_singleton_dataloader
 # from src.dataloaders.modified_dataset_cached import get_modified_cached_dataloader
 from src.dataloaders.mood_dataset_cached import get_mood_cached_dataloader
 from src.models.general_model_handler import GeneralModelHandler
-
-from src.core.audio_engine import AudioEngine
+from src.models.cached_transformer import (
+    CachedTransformerEncoderLayer,
+    CachedTransformerEncoder,
+    KVCache,
+)
 
 class MoodModelGenerator(nn.Module):
     def __init__(
@@ -57,10 +61,10 @@ class MoodModelGenerator(nn.Module):
         self.mood_emb = nn.Embedding(num_moods, d_model)
 
         # ---- Transformer stack (decoder-only, GPT-style) ----
-        # We use TransformerEncoder (self-attention only) with a causal mask.
-        # NOT TransformerDecoder, which has cross-attention that would leak
-        # future information through the unmasked memory path.
-        encoder_layer = nn.TransformerEncoderLayer(
+        # CachedTransformerEncoder is a drop-in for nn.TransformerEncoder
+        # that threads an optional KVCache through each layer during inference.
+        # Parameter names match PyTorch's built-in layers for checkpoint compat.
+        encoder_layer = CachedTransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
@@ -68,7 +72,7 @@ class MoodModelGenerator(nn.Module):
             batch_first=True,
             norm_first=True,
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.transformer = CachedTransformerEncoder(encoder_layer, num_layers=num_layers)
 
         # ---- Output projection ----
         self.fc_out = nn.Linear(d_model, vocab_size)
@@ -93,22 +97,25 @@ class MoodModelGenerator(nn.Module):
         self,
         x: torch.Tensor,
         mood_id: torch.Tensor,
+        kv_cache: KVCache | None = None,
+        start_pos: int = 0,
     ) -> torch.Tensor:
         """
         Parameters
         ----------
-        x        : LongTensor  [B, S]   - input token ids
-        mood_id  : LongTensor  [B, S]   - mood category index
+        x         : LongTensor  [B, S]   - input token ids
+        mood_id   : LongTensor  [B, S]   - mood category index
+        kv_cache  : optional KVCache for cached inference (None = training)
+        start_pos : positional-embedding offset for the first token in ``x``
 
         Returns
         -------
-        logits   : FloatTensor [B, S, vocab_size]
+        logits    : FloatTensor [B, S, vocab_size]
         """
         B, S = x.shape
         device = x.device
 
         # Keep conditioning length aligned with token sequence length.
-        # This makes generation robust when context windows are shorter/longer.
         if mood_id.dim() == 1:
             mood_id = mood_id.unsqueeze(1)
         if mood_id.size(0) != B:
@@ -122,7 +129,7 @@ class MoodModelGenerator(nn.Module):
                 pad = mood_id[:, -1:].expand(B, S - mood_id.size(1))
                 mood_id = torch.cat([mood_id, pad], dim=1)
 
-        positions = torch.arange(S, device=device).unsqueeze(0)
+        positions = torch.arange(start_pos, start_pos + S, device=device).unsqueeze(0)
         h = self.token_emb(x) * math.sqrt(self.d_model)
         h = h + self.pos_emb(positions)
         cond = self.mood_emb(mood_id)
@@ -131,8 +138,10 @@ class MoodModelGenerator(nn.Module):
         h = self.emb_norm(h)
         h = self.drop(h)
 
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(S, device=device)
-        out = self.transformer(h, mask=causal_mask, is_causal=True)
+        if kv_cache is not None:
+            out = self.transformer(h, kv_cache=kv_cache)
+        else:
+            out = self.transformer(h, is_causal=True)
 
         logits = self.fc_out(out)
         return logits
@@ -208,9 +217,9 @@ class MoodModelGeneratorHandler(GeneralModelHandler):
     #             sequence = torch.cat([sequence, next_token], dim=1)
 
     #     return sequence.squeeze(0).cpu().tolist()
-    @torch.no_grad()
+    @torch.inference_mode()
     def generate_single_step(
-        self, 
+        self,
         current_tokens: torch.Tensor,                   # Tensor Shape: (1, seq_len)
         current_moods: torch.Tensor,                    # Tensor Shape: (1, seq_len)
         target_mood_id: int,                            # Int: The mood you want for THIS specific step
@@ -218,153 +227,154 @@ class MoodModelGeneratorHandler(GeneralModelHandler):
         cfg_scale=3.0,                                  # Float: Guidance strength
         temperature=1.20,                               # Float: Randomness/creativity
         top_p=0.95,                                     # Float: Nucleus filtering threshold
-        # rep_penalty=1.15,                             # Float: Repetition penalty factor (> 1.0)
-        # rep_window=50                                 # Int: How many past tokens to look at for penalty
+        cond_cache: KVCache | None = None,              # Pre-allocated conditional KV cache
+        uncond_cache: KVCache | None = None,            # Pre-allocated unconditional KV cache
     ):
-        self.model.eval()
-        self.model.to(self.device)
+        use_cache = Config.USE_KV_CACHE and cond_cache is not None
 
-        # Keep generation context inside model max length and align conditioning.
+        if use_cache:
+            if cond_cache.is_full():
+                # Cache overflow: reset and partial refill.  Keep half the
+                # window so the next ~MAX_SEQ_LEN/2 steps run from cache.
+                cond_cache.reset()
+                uncond_cache.reset()
+                refill_len = min(current_tokens.size(1), Config.MAX_SEQ_LEN // 2)
+                ctx = current_tokens[:, -refill_len:].to(self.device)
+                cond_mood_seq = current_moods[:, -refill_len:].to(self.device)
+                uncond_mood_seq = torch.full_like(cond_mood_seq, uncond_mood_id)
+                start_pos = 0
+            else:
+                # Normal cached decode: process only the latest token.
+                ctx = current_tokens[:, -1:].to(self.device)
+                cond_mood_seq = current_moods[:, -1:].to(self.device)
+                uncond_mood_seq = torch.full_like(cond_mood_seq, uncond_mood_id)
+                start_pos = cond_cache.seq_len
 
-        # Current Context Window Size
-        ctx_len = min(current_tokens.size(1), Config.SEQ_LEN)
+            cond_logits = self.model(
+                ctx, cond_mood_seq, kv_cache=cond_cache, start_pos=start_pos,
+            )[:, -1, :]
+            uncond_logits = self.model(
+                ctx, uncond_mood_seq, kv_cache=uncond_cache, start_pos=start_pos,
+            )[:, -1, :]
+        else:
+            # No cache: full-context forward (original behaviour).
+            ctx_len = min(current_tokens.size(1), Config.SEQ_LEN)
+            ctx = current_tokens[:, -ctx_len:].to(self.device)
+            cond_mood_seq = current_moods[:, -ctx_len:].to(self.device)
+            uncond_mood_seq = torch.full((1, ctx_len), uncond_mood_id, dtype=torch.long, device=self.device)
 
-        # Current Context Window
-        # 1.1 Input Tokens
-        ctx = current_tokens[:, -ctx_len:].to(self.device)
+            cond_logits = self.model(ctx, cond_mood_seq)[:, -1, :]
+            uncond_logits = self.model(ctx, uncond_mood_seq)[:, -1, :]
 
-        # 1.2 Input Moods
-        # input_mood_seq = current_moods[:, -ctx_len:-1].to(self.device)
-        # target_mood_seq = torch.full((1, 1), target_mood_id, dtype=torch.long, device=self.device)
-
-        # 1.3 Target Mood
-        # cond_mood_seq = torch.full((1, ctx_len), target_mood_id, dtype=torch.long, device=self.device)
-        # cond_mood_seq = torch.cat((input_mood_seq, target_mood_seq), dim=1)
-        cond_mood_seq = current_moods[:, -ctx_len:].to(self.device)
-        uncond_mood_seq = torch.full((1, ctx_len), uncond_mood_id, dtype=torch.long, device=self.device)
-
-        # 2. Dual Forward Pass for CFG
-        cond_logits = self.model(ctx, cond_mood_seq)[:, -1, :]
-        uncond_logits = self.model(ctx, uncond_mood_seq)[:, -1, :]
-        
-        # 3. Apply Classifier-Free Guidance
+        # ---- Classifier-Free Guidance ----
         final_logits = uncond_logits + cfg_scale * (cond_logits - uncond_logits)
-        
-        # # 4. Apply Repetition Penalty
-        # if rep_penalty > 1.0:
-        #     # Look only at the most recent tokens up to rep_window
-        #     recent_tokens = current_tokens[0, -rep_window:].tolist()
-        #     for token in set(recent_tokens):
-        #         # If logit is positive, divide to reduce it. If negative, multiply to make it more negative.
-        #         if final_logits[0, token] > 0:
-        #             final_logits[0, token] /= rep_penalty
-        #         else:
-        #             final_logits[0, token] *= rep_penalty
-                    
-        # 5. Apply Temperature
+
+        # ---- Temperature ----
         final_logits = final_logits / temperature
-        
-        # 6. Apply Top-p (Nucleus) Filtering
+
+        # ---- Top-p (Nucleus) Filtering ----
         probs = F.softmax(final_logits, dim=-1)
         sorted_probs, sorted_indices = torch.sort(probs, descending=True)
         cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-        
-        # Remove tokens with cumulative probability above the threshold
+
         sorted_indices_to_remove = cumulative_probs > top_p
-        # Shift indices to the right to keep the first token above the threshold
         sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
         sorted_indices_to_remove[..., 0] = 0
-        
+
         indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
         probs[indices_to_remove] = 0.0
-        
-        # Renormalize the probabilities so they sum to 1.0 again
         probs = probs / probs.sum(dim=-1, keepdim=True)
-        
-        # 7. Sample the next token
+
+        # ---- Sample ----
         next_token = torch.multinomial(probs, num_samples=1)
         next_mood = torch.full((1, 1), target_mood_id, dtype=torch.long, device=self.device)
-        
-        # 8. Append to the sequence
+
         updated_tokens = torch.cat((current_tokens, next_token), dim=1)
         updated_moods = torch.cat((current_moods, next_mood), dim=1)
         return updated_tokens, updated_moods, next_token
     
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="MoodModelGenerator – train or generate")
+    sub = parser.add_subparsers(dest="command")
+
+    tr = sub.add_parser("train")
+    tr.add_argument("--epochs", type=int, default=Config.EPOCHS)
+    tr.add_argument("--batch-size", type=int, default=Config.BATCH_SIZE)
+    tr.add_argument("--resume-epoch", type=int, default=None,
+                     help="Resume from this checkpoint epoch before training")
+
+    gen = sub.add_parser("generate")
+    gen.add_argument("--epoch", type=int, default=None,
+                      help="Checkpoint epoch to load (default: best)")
+    gen.add_argument("--mood", type=str, default="magnificent", choices=Config.MOODS)
+    gen.add_argument("--length", type=int, default=4096)
+    gen.add_argument("--output", type=str, default="generated_midi.mid")
+
+    args = parser.parse_args()
+    if args.command is None:
+        parser.print_help()
+        raise SystemExit(1)
+
     device = Config.DEVICE
     print(f"Device: {device}")
 
-    # ---- Data ----
     tokenizer = get_tokenizer()
     vocab_size = tokenizer.vocab_size
     print(f"Vocabulary size: {vocab_size}")
 
-    ## TO BE IMPLEMENTED
-    # dataloader = get_full_dataloader()
-    dataloader = get_mood_cached_dataloader(
-        batch_size=Config.BATCH_SIZE,
-        num_workers=Config.NUM_WORKERS,
-        persistent_workers=Config.PERSISTENT_WORKERS,
-        prefetch_factor=Config.PREFETCH_FACTOR,
-        # sample_factor=1.0
-    )
-    
-    print(f"Batches per epoch: {len(dataloader)}")
-    print(f"Using {Config.NUM_WORKERS} parallel workers for data loading")
-
-    # ---- Model ----
-    model = MoodModelGenerator(
-        vocab_size=vocab_size,
-    ).to(device)
-
+    model = MoodModelGenerator(vocab_size=vocab_size).to(device)
     optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=Config.LEARNING_RATE,
-        weight_decay=Config.WEIGHT_DECAY,
+        model.parameters(), lr=Config.LEARNING_RATE, weight_decay=Config.WEIGHT_DECAY,
     )
-    
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=Config.EPOCHS, eta_min=1e-6
+        optimizer, T_max=args.epochs if args.command == "train" else Config.EPOCHS,
+        eta_min=1e-6,
     )
-    
-    criterion = nn.CrossEntropyLoss(ignore_index=0) 
-    
+    criterion = nn.CrossEntropyLoss(ignore_index=0)
     handler = MoodModelGeneratorHandler(
-        model=model,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        criterion=criterion
+        model=model, optimizer=optimizer, scheduler=scheduler, criterion=criterion,
     )
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Generator parameters: {total_params:,}")
-    
-    # handler.train(dataloader=dataloader, epochs=32)
-    handler.load_checkpoint(epoch=26)
 
-    audio_engine = AudioEngine(
-        soundfont=Config.PROJECT_ROOT / "FluidR3_GM.sf2",
-        sample_rate=48000,
-        bar_duration=2,
-    )
+    # ── Train ────────────────────────────────────────────────────────────
+    if args.command == "train":
+        if args.resume_epoch is not None:
+            handler.load_checkpoint(epoch=args.resume_epoch)
+            print(f"Resumed from epoch {args.resume_epoch}")
 
+        dataloader = get_mood_cached_dataloader(
+            batch_size=args.batch_size,
+            num_workers=Config.NUM_WORKERS,
+            persistent_workers=Config.PERSISTENT_WORKERS,
+            prefetch_factor=Config.PREFETCH_FACTOR,
+        )
+        print(f"Batches per epoch: {len(dataloader)}")
+        print(f"Using {Config.NUM_WORKERS} parallel workers for data loading")
+        handler.train(dataloader=dataloader, epochs=args.epochs)
 
-    current_tokens = torch.tensor([[1]], device=Config.DEVICE)
-    audio_engine.push_token(1)
-    target_mood_id = Config.MOOD_TO_ID["magnificent"]
-    current_moods = torch.tensor([[target_mood_id]], device=Config.DEVICE)
-    target_length = 4096
-    for step in tqdm(range(target_length), desc="Generating MIDI"):
-        if step == 1024:
-            target_mood_id = Config.MOOD_TO_ID["quiet"]
-        current_tokens, current_moods, next_token = handler.generate_single_step(current_tokens, current_moods, target_mood_id)
-        audio_engine.push_token(next_token.item())
-    audio_engine.push_token(4, stop=True)
+    # ── Generate ─────────────────────────────────────────────────────────
+    elif args.command == "generate":
+        handler.load_checkpoint(epoch=args.epoch)
+        model.eval()
 
-    generated_tokens = current_tokens.squeeze(0).cpu().tolist()
-    # generated_moods = current_moods.squeeze(0).cpu().tolist()
-    # print(generated_tokens[0:20])
-    # print(generated_tokens[2048:2068])
-    # print(generated_moods[0:16])
-    # print(generated_moods[2040:2056])
-    save_midi(generated_tokens, tokenizer, "generated_midi.mid")
+        if Config.USE_KV_CACHE:
+            cond_cache = KVCache.from_model(model)
+            uncond_cache = KVCache.from_model(model)
+        else:
+            cond_cache = uncond_cache = None
+
+        target_mood_id = Config.MOOD_TO_ID[args.mood]
+        current_tokens = torch.tensor([[1]], device=device)
+        current_moods = torch.tensor([[target_mood_id]], device=device)
+
+        for step in tqdm(range(args.length), desc="Generating MIDI"):
+            current_tokens, current_moods, next_token = handler.generate_single_step(
+                current_tokens, current_moods, target_mood_id,
+                cond_cache=cond_cache, uncond_cache=uncond_cache,
+            )
+
+        generated_tokens = current_tokens.squeeze(0).cpu().tolist()
+        save_midi(generated_tokens, tokenizer, args.output)
+        print(f"Saved {len(generated_tokens)} tokens to {args.output}")

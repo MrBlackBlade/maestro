@@ -10,6 +10,11 @@ from src.core.config import Config
 from src.core.utils import get_tokenizer, save_midi
 from src.dataloaders.singleton_dataloader import get_singleton_dataloader
 from src.models.general_model_handler import GeneralModelHandler
+from src.models.cached_transformer import (
+    CachedTransformerEncoderLayer,
+    CachedTransformerEncoder,
+    KVCache,
+)
 
 from miditok import REMI, TokSequence
 
@@ -31,16 +36,16 @@ class MinimalGenerator(nn.Module):
         # ==========================================
         # 2. Transformer Blocks
         # ==========================================
-        # We use PyTorch's native layers. For a decoder-only model, 
-        # we can actually use the "EncoderLayer" as long as we force a causal mask on it.
-        layer = nn.TransformerEncoderLayer(
-            d_model=d_model, 
-            nhead=nhead, 
-            dim_feedforward=d_model * 4, 
+        # CachedTransformerEncoder is a drop-in for nn.TransformerEncoder
+        # that threads an optional KVCache through each layer during inference.
+        layer = CachedTransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=d_model * 4,
             dropout=0.2,
-            batch_first=True  # Keeps tensors as [Batch, Sequence, Feature]
+            batch_first=True,
         )
-        self.transformer = nn.TransformerEncoder(layer, num_layers=num_layers)
+        self.transformer = CachedTransformerEncoder(layer, num_layers=num_layers)
         
         # ==========================================
         # 3. Output Head
@@ -48,28 +53,20 @@ class MinimalGenerator(nn.Module):
         # Projects the final transformer representations back into vocabulary probabilities
         self.fc_out = nn.Linear(d_model, vocab_size)
 
-    def forward(self, x):
-        B, T = x.size() # Batch size, Sequence Length
+    def forward(self, x, kv_cache=None, start_pos=0):
+        B, T = x.size()
         
-        # 1. Create position indices (0, 1, 2 ... T-1)
-        positions = torch.arange(0, T, device=x.device).unsqueeze(0).expand(B, T)
+        positions = torch.arange(start_pos, start_pos + T, device=x.device).unsqueeze(0).expand(B, T)
         
-        # 2. Combine Token + Positional Embeddings
-        # (Standard practice is to scale token embeddings by sqrt(d_model))
         embeds = self.token_emb(x) * math.sqrt(self.d_model)
         x = embeds + self.pos_emb(positions)
         
-        # 3. The Causal Mask (CRITICAL)
-        # We generate a square matrix that hides the future tokens from the current token.
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(T, device=x.device)
+        if kv_cache is not None:
+            out = self.transformer(x, kv_cache=kv_cache)
+        else:
+            out = self.transformer(x, is_causal=True)
         
-        # 4. Pass through the transformer
-        # is_causal=True triggers PyTorch's highly optimized FlashAttention under the hood
-        out = self.transformer(x, mask=causal_mask, is_causal=True)
-        
-        # 5. Get the final logits (predictions)
         logits = self.fc_out(out)
-        
         return logits
 
 class MinimalGeneratorHandler(GeneralModelHandler):
@@ -105,35 +102,40 @@ class MinimalGeneratorHandler(GeneralModelHandler):
         temperature = 1
         top_k = 10
 
-        current_bar = set()
+        cache = KVCache.from_model(self.model) if Config.USE_KV_CACHE else None
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for i in range(target_length - 1):
-                # Get Context Window
-                window = generated_tokens[:, -window_size:]
-                
-                # Inference
-                logits = self.model(window)
+                if cache is not None:
+                    if cache.is_full():
+                        cache.reset()
+                        refill_len = min(generated_tokens.size(1), Config.MAX_SEQ_LEN // 2)
+                        window = generated_tokens[:, -refill_len:]
+                        start_pos = 0
+                    else:
+                        window = generated_tokens[:, -1:]
+                        start_pos = cache.seq_len
+                    logits = self.model(window, kv_cache=cache, start_pos=start_pos)
+                else:
+                    window = generated_tokens[:, -window_size:]
+                    logits = self.model(window)
+
                 next_token_logits = logits[:, -1, :]
 
-                # Mask out the last token
                 last_token_id = generated_tokens[0, -1].item()
                 next_token_logits[0, last_token_id] = float('-inf')
 
-                # Sample
                 scaled_logits = next_token_logits / temperature
                 top_k_values, top_k_indices = torch.topk(scaled_logits, top_k, dim=-1)
 
-                # Create a tensor of -infinity, then scatter top K values back into it
                 filtered_logits = torch.full_like(scaled_logits, float('-inf'))
                 filtered_logits.scatter_(1, top_k_indices, top_k_values)
-                
-                # Convert to probabilities
+
                 probs = F.softmax(filtered_logits, dim=-1)
-                
+
                 next_token_id = torch.multinomial(probs, num_samples=1)
                 generated_tokens = torch.cat([generated_tokens, next_token_id], dim=1)
-        
+
         final_token_list = generated_tokens.squeeze(0).cpu().tolist()
 
         return final_token_list

@@ -61,6 +61,10 @@ class GeneralModelHandler(ABC):
         self.model.train()
         self.model.to(self.device)
         self.best_loss = float("inf")
+
+        use_amp = self.device == "cuda"
+        scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
         for epoch in range(1, epochs + 1):
             epoch_loss = 0.0
             num_batches = 0
@@ -68,13 +72,18 @@ class GeneralModelHandler(ABC):
             loop = tqdm(dataloader, desc=f"Epoch {epoch}/{epochs}", mininterval=1.0)
             for batch_idx, batch in enumerate(loop):
                 self.optimizer.zero_grad()
-                loss = self.train_step(batch)
-                loss.backward()
+
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    loss = self.train_step(batch)
+
+                scaler.scale(loss).backward()
 
                 if Config.GRAD_CLIP > 0:
+                    scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), Config.GRAD_CLIP)
 
-                self.optimizer.step()
+                scaler.step(self.optimizer)
+                scaler.update()
 
                 epoch_loss += loss.item()
                 num_batches += 1

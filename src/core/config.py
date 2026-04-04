@@ -90,6 +90,7 @@ class Config:
     TOP_K = 50
     TOP_P = 0.95                     # Nucleus sampling threshold
     GENERATE_LENGTH = 256            # Default number of tokens to generate
+    USE_KV_CACHE = True              # KV caching for faster autoregressive generation
 
     # ========================
     # Device

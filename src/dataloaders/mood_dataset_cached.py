@@ -54,8 +54,10 @@ class MoodCachedDataset(Dataset):
         row = self.df.iloc[idx]
         npy_path = self.tokenized_dir / row["filename"].replace(".midi", ".npy")
 
-        # Load pre-tokenized sequence (FAST - just numpy load)
-        token_ids = np.load(npy_path).astype(np.int64).tolist()
+        try:
+            token_ids = np.load(npy_path).astype(np.int64).tolist()
+        except (ValueError, OSError, EOFError):
+            token_ids = []
 
         target_len = self.seq_len + 1
 
