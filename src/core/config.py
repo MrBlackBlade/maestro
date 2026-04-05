@@ -21,6 +21,8 @@ class Config:
     TOKENIZER_PARAMS_PATH = DATA_DIR / "tokenizer.json"
     TOKENIZED_DIR = DATA_DIR / "tokenized"  # Pre-processed tokenized sequences
 
+    RESOURCES_DIR = PROJECT_ROOT / "res"
+
     # Model checkpoint directories
     MODEL_CKPT_DIR = PROJECT_ROOT / "models"
     GENERATOR_CKPT_DIR = PROJECT_ROOT / "models" / "generator"

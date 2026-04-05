@@ -16,6 +16,9 @@ __pycache__/
 *.pyw
 *.pyz
 
+# Resources
+res/*
+
 # Ignore the large tokenized dataset folder
 data/tokenized/*
 
