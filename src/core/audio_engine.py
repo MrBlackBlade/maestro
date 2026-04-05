@@ -23,7 +23,7 @@ tokenizer = get_tokenizer()
 class AudioEngine:
     def __init__(
         self, 
-        soundfont: str = Config.PROJECT_ROOT / "FluidR3_GM.sf2",
+        soundfont: str = Config.RESOURCES_DIR / "FluidR3_GM.sf2",
         sample_rate: int = 48000,
         bar_duration: int = 2,
     ):
@@ -43,6 +43,10 @@ class AudioEngine:
 
         self.prev_audio = None
 
+        self.playback_done = threading.Event()
+
+        self.first_bar = False
+
         threading.Thread(target=self.render_worker, daemon=True).start()
         threading.Thread(target=self.audio_worker, daemon=True).start()
 
@@ -57,7 +61,15 @@ class AudioEngine:
             self.bars_buffer_queue.put(self.live_token_buffer)
             self.live_token_buffer = []
         
-        if (self.bars_buffer_queue.qsize() > 1):
+        if (not self.first_bar and self.bars_buffer_queue.qsize() > 1):
+            current_bar = self.bars_buffer_queue.get()
+            tok_sequence = TokSequence(ids=current_bar)
+            tokenizer.complete_sequence(tok_sequence)
+            score = tokenizer.decode(tok_sequence)
+            self.render_queue.put(score)
+            self.first_bar = True
+        
+        if (self.first_bar and self.bars_buffer_queue.qsize() > 0):
             current_bar = self.bars_buffer_queue.get()
             tok_sequence = TokSequence(ids=current_bar)
             tokenizer.complete_sequence(tok_sequence)
@@ -128,5 +140,7 @@ class AudioEngine:
                 self.prev_audio = audio
         except Exception as e:
             print(f"Audio worker error: {e}")
+        finally:
             self.stream.stop()
             self.stream.close()
+            self.playback_done.set()

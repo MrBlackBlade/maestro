@@ -1,13 +1,14 @@
 
 import argparse
 import math
-
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 
 from src.core.config import Config
+from src.core.audio_engine import AudioEngine
 from src.core.utils import get_tokenizer, save_midi
 from src.dataloaders.mood_dataset_cached import get_mood_cached_dataloader
 from src.models.general_model_handler import GeneralModelHandler
@@ -314,16 +315,31 @@ if __name__ == "__main__":
             cache = KVCache.from_model(model, batch_size=num_branches)
         else:
             cache = None
+        try: 
+            audio_engine = AudioEngine()
+            target_mood_id = Config.MOOD_TO_ID[args.mood]
+            current_tokens = torch.tensor([[1]], device=device)
+            current_moods = torch.tensor([[target_mood_id]], device=device)
+            audio_engine.push_token(1)
 
-        target_mood_id = Config.MOOD_TO_ID[args.mood]
-        current_tokens = torch.tensor([[1]], device=device)
-        current_moods = torch.tensor([[target_mood_id]], device=device)
+            with tqdm(total=args.length, desc="Generating MIDI") as pbar:
+                step = 0
+                while step < args.length:
+                    if (not audio_engine.audio_queue.empty()
+                    ):
+                        time.sleep(0.1)
+                        continue
+                    current_tokens, current_moods, next_token = handler.generate_single_step(
+                        current_tokens, current_moods, target_mood_id,
+                        cache=cache,
+                    )
+                    audio_engine.push_token(next_token.item())
+                    step += 1
+                    pbar.update(1)
+        finally:
+            audio_engine.push_token(4, stop=True)
+            audio_engine.playback_done.wait()
 
-        for step in tqdm(range(args.length), desc="Generating MIDI"):
-            current_tokens, current_moods, _ = handler.generate_single_step(
-                current_tokens, current_moods, target_mood_id,
-                cache=cache,
-            )
 
         generated_tokens = current_tokens.squeeze(0).cpu().tolist()
         save_midi(generated_tokens, tokenizer, args.output)
