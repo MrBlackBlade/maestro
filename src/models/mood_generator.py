@@ -154,7 +154,7 @@ class MoodModelGeneratorHandler(GeneralModelHandler):
         self.criterion = criterion
 
     def train_step(self, batch):
-        tokens, moods = batch
+        tokens, moods, *_ = batch
         
         tokens = tokens.to(self.device)
         moods = moods.to(self.device)

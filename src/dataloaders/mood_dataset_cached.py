@@ -73,17 +73,17 @@ class MoodCachedDataset(Dataset):
             token_ids = token_ids[start : start + target_len]
         # else: len(token_ids) == target_len, use as-is
 
-        chance = random()
-        if chance < 0.15:
+        true_mood_id = int(row["mood_id"])
+
+        if random() < 0.15:
             selected_mood_id = Config.NUM_MOODS
         else:
-            selected_mood_id = row["mood_id"]
-
+            selected_mood_id = true_mood_id
 
         tokens = torch.tensor(token_ids, dtype=torch.long)
         mood_id = torch.tensor([selected_mood_id] * self.seq_len, dtype=torch.long)
 
-        return tokens, mood_id
+        return tokens, mood_id, torch.tensor(true_mood_id, dtype=torch.long)
 
 
 def get_mood_cached_dataloader(
@@ -121,7 +121,7 @@ if __name__ == "__main__":
         prefetch_factor=Config.PREFETCH_FACTOR,
         sample_factor=0.2
     )
-    for tokens, mood_id in dataloader:
+    for tokens, mood_id, true_mood in dataloader:
         inp = tokens[:, :-1]
         tgt = tokens[:, 1:]
         print(inp.shape)

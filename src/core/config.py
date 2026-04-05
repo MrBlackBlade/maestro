@@ -84,6 +84,14 @@ class Config:
     NOISE_LEVEL = 0.20               # Fraction of tokens to corrupt during refiner training
 
     # ========================
+    # Mood Classifier (NegCFGGenerator)
+    # ========================
+    MOOD_LOSS_WEIGHT = 0.1           # Weight of mood classifier CE relative to token CE
+    MOOD_CLASSIFIER_DETACH = False   # If True, stop classifier gradients from flowing into transformer
+    NEG_CFG_SCALE = 1.0              # Base negative guidance scale for penalty moods
+    POS_CFG_SCALE = 3.0              # Positive guidance scale for target mood
+
+    # ========================
     # Generation / Inference
     # ========================
     TEMPERATURE = 0.9
