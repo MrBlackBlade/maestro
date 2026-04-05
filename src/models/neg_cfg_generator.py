@@ -288,9 +288,11 @@ if __name__ == "__main__":
 
     # ── Train ────────────────────────────────────────────────────────────
     if args.command == "train":
+        start_epoch = 1
         if args.resume_epoch is not None:
             handler.load_checkpoint(epoch=args.resume_epoch)
-            print(f"Resumed from epoch {args.resume_epoch}")
+            start_epoch = args.resume_epoch + 1
+            print(f"Resumed from epoch {args.resume_epoch}, continuing at epoch {start_epoch}")
 
         dataloader = get_mood_cached_dataloader(
             batch_size=args.batch_size,
@@ -300,7 +302,7 @@ if __name__ == "__main__":
         )
         print(f"Batches per epoch: {len(dataloader)}")
         print(f"Using {Config.NUM_WORKERS} parallel workers for data loading")
-        handler.train(dataloader=dataloader, epochs=args.epochs)
+        handler.train(dataloader=dataloader, epochs=args.epochs, start_epoch=start_epoch)
 
     # ── Generate ─────────────────────────────────────────────────────────
     elif args.command == "generate":

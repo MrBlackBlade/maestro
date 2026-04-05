@@ -24,6 +24,7 @@ class GeneralModelHandler(ABC):
         self.ckpt_dir = Config.MODEL_CKPT_DIR / model_name
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
         self.best_loss = float("inf")
+        self.resumed_epoch = 0
 
     @abstractmethod
     def train_step(self, batch):
@@ -55,17 +56,27 @@ class GeneralModelHandler(ABC):
         self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         self.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
         self.best_loss = ckpt["loss"]
+        self.resumed_epoch = ckpt["epoch"]
         return ckpt
 
-    def train(self, dataloader, epochs):
+    def train(self, dataloader, epochs, start_epoch: int | None = None):
+        if start_epoch is None:
+            start_epoch = self.resumed_epoch + 1
+        if start_epoch < 1:
+            start_epoch = 1
+        if start_epoch > epochs:
+            raise ValueError(
+                f"start_epoch ({start_epoch}) must be <= epochs ({epochs})",
+            )
         self.model.train()
         self.model.to(self.device)
-        self.best_loss = float("inf")
+        if self.resumed_epoch == 0:
+            self.best_loss = float("inf")
 
         use_amp = self.device == "cuda"
         scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
-        for epoch in range(1, epochs + 1):
+        for epoch in range(start_epoch, epochs + 1):
             epoch_loss = 0.0
             num_batches = 0
 

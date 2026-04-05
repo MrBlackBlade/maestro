@@ -1,3 +1,4 @@
+import argparse
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
@@ -90,17 +91,19 @@ class MinimalGeneratorHandler(GeneralModelHandler):
 
         return loss
     
-    def generate(self, x_batch):
+    def generate(
+        self,
+        x_batch,
+        target_length: int = 4096,
+        temperature: float = 1.0,
+        top_k: int = 10,
+    ):
         self.model.eval()
         self.model.to(self.device)
 
         seed_tokens = x_batch.to(self.device)
-        target_length = 4096
         window_size = Config.MAX_SEQ_LEN
         generated_tokens = seed_tokens
-
-        temperature = 1
-        top_k = 10
 
         cache = KVCache.from_model(self.model) if Config.USE_KV_CACHE else None
 
@@ -142,6 +145,8 @@ class MinimalGeneratorHandler(GeneralModelHandler):
 
 if __name__ == "__main__":
     #tokenizer = get_tokenizer(Config.TOKENIZER_PARAMS_PATH)
+    device = Config.DEVICE
+    
     tokenizer = get_tokenizer()
     vocab_size = tokenizer.vocab_size # Fetch dynamically from miditok
     model = MinimalGenerator(vocab_size=vocab_size)
@@ -150,7 +155,29 @@ if __name__ == "__main__":
     # # x_batch shape: [4, 256]
     token_path = Config.DATASETS_DIR / "XMIDI_angry_classical_0HP7PK58_tokens.npy"
 
-    dataloader = get_singleton_dataloader(token_path, seq_len=1024)
+    parser = argparse.ArgumentParser(description="MinimalGenerator – train or generate")
+    sub = parser.add_subparsers(dest="command")
+
+    tr = sub.add_parser("train")
+    tr.add_argument("--epochs", type=int, default=Config.EPOCHS)
+    tr.add_argument("--batch-size", type=int, default=Config.BATCH_SIZE)
+    tr.add_argument("--resume-epoch", type=int, default=None,
+                    help="Resume from this checkpoint epoch before training")
+
+    gen = sub.add_parser("generate")
+    gen.add_argument("--epoch", type=int, default=None,
+                     help="Checkpoint epoch to load (default: best)")
+    gen.add_argument("--length", type=int, default=4096)
+    gen.add_argument("--seed-length", type=int, default=1,
+                     help="Number of initial tokens to seed generation")
+    gen.add_argument("--temperature", type=float, default=1.0)
+    gen.add_argument("--top-k", type=int, default=10)
+    gen.add_argument("--output", type=str, default="generated_midi.mid")
+
+    args = parser.parse_args()
+    if args.command is None:
+        parser.print_help()
+        raise SystemExit(1)
 
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
     criterion = nn.CrossEntropyLoss()
@@ -158,13 +185,34 @@ if __name__ == "__main__":
         optimizer, T_max=Config.EPOCHS, eta_min=1e-6
     )
     handler = MinimalGeneratorHandler(model, optimizer, criterion, scheduler)
-    handler.train(dataloader=dataloader, epochs=5)
 
-    for x_batch, y_batch in dataloader:
-        x_batch = x_batch.to(Config.DEVICE)
-        x_batch = x_batch[0, 0:1].unsqueeze(0)
-        print(x_batch.shape)
-        generated_tokens = handler.generate(x_batch)
+    if args.command == "train":
+        dataloader = get_singleton_dataloader(token_path, seq_len=1024)
+
+        if args.resume_epoch is not None:
+            handler.load_checkpoint(epoch=args.resume_epoch)
+            start_epoch = args.resume_epoch + 1
+            print(f"Resumed from epoch {args.resume_epoch}, continuing at epoch {start_epoch}")
+        else:
+            start_epoch = 1
+
+        handler.train(dataloader=dataloader, epochs=args.epochs, start_epoch=start_epoch)
+
+    elif args.command == "generate":
+        if args.epoch is not None:
+            handler.load_checkpoint(epoch=args.epoch)
+            print(f"Loaded checkpoint from epoch {args.epoch}")
+        else:
+            handler.load_checkpoint()
+            print("Loaded best checkpoint")
+
+        start_tokens = [1] * max(1, args.seed_length)
+        x_batch = torch.tensor([start_tokens], dtype=torch.long, device=device)
+        generated_tokens = handler.generate(
+            x_batch,
+            target_length=args.length,
+            temperature=args.temperature,
+            top_k=args.top_k,
+        )
         print(generated_tokens[:20])
-        save_midi(generated_tokens, tokenizer, "generated_midi.mid")
-        break
+        save_midi(generated_tokens, tokenizer, args.output)

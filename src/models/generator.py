@@ -11,6 +11,7 @@ Key design choices
 * KV-cache friendly: during inference you can call the model with just the
   last token and manually manage the cache (not shown here but trivial to add).
 """
+import argparse
 import math
 import torch
 import torch.nn as nn
@@ -230,25 +231,36 @@ if __name__ == "__main__":
     vocab_size = tokenizer.vocab_size
     print(f"Vocabulary size: {vocab_size}")
 
-    ## TO BE IMPLEMENTED
-    # dataloader = get_full_dataloader()
-    dataloader = get_modified_cached_dataloader(
-        batch_size=Config.BATCH_SIZE,
-        num_workers=Config.NUM_WORKERS,
-        persistent_workers=Config.PERSISTENT_WORKERS,
-        prefetch_factor=Config.PREFETCH_FACTOR,
-        sample_factor=1.0
-    )
-    
-    print(f"Batches per epoch: {len(dataloader)}")
-    print(f"Using {Config.NUM_WORKERS} parallel workers for data loading")
-
     # ---- Model ----
     model = ModelGenerator(
         vocab_size=vocab_size,
         num_moods=Config.NUM_MOODS,
         num_genres=Config.NUM_GENRES,
     ).to(device)
+    
+    parser = argparse.ArgumentParser(description="Generator – train or generate")
+    sub = parser.add_subparsers(dest="command")
+
+    tr = sub.add_parser("train")
+    tr.add_argument("--epochs", type=int, default=Config.EPOCHS)
+    tr.add_argument("--batch-size", type=int, default=Config.BATCH_SIZE)
+    tr.add_argument("--resume-epoch", type=int, default=None,
+                    help="Resume from this checkpoint epoch before training")
+
+    gen = sub.add_parser("generate")
+    gen.add_argument("--epoch", type=int, default=None,
+                     help="Checkpoint epoch to load (default: best)")
+    gen.add_argument("--length", type=int, default=4096)
+    gen.add_argument("--seed-length", type=int, default=1,
+                     help="Number of initial tokens to seed generation")
+    gen.add_argument("--temperature", type=float, default=1.0)
+    gen.add_argument("--top-k", type=int, default=10)
+    gen.add_argument("--output", type=str, default="generated_midi.mid")
+
+    args = parser.parse_args()
+    if args.command is None:
+        parser.print_help()
+        raise SystemExit(1)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -268,13 +280,47 @@ if __name__ == "__main__":
         scheduler=scheduler,
         criterion=criterion
     )
-
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"Generator parameters: {total_params:,}")
     
-    handler.train(dataloader=dataloader, epochs=10)
-    # handler.load_checkpoint(epoch=9)
+    if args.command == "train":
+        dataloader = get_modified_cached_dataloader(
+        batch_size=Config.BATCH_SIZE,
+        num_workers=Config.NUM_WORKERS,
+        persistent_workers=Config.PERSISTENT_WORKERS,
+        prefetch_factor=Config.PREFETCH_FACTOR,
+        sample_factor=1.0
+        )
 
-    generated_tokens = handler.generate(mood="romantic", genre="country")
-    print(generated_tokens[:20])
-    save_midi(generated_tokens, tokenizer, "generated_midi.mid")
+        if args.resume_epoch is not None:
+            handler.load_checkpoint(epoch=args.resume_epoch)
+            start_epoch = args.resume_epoch + 1
+            print(f"Resumed from epoch {args.resume_epoch}, continuing at epoch {start_epoch}")
+        else:
+            start_epoch = 1
+        
+        handler.train(dataloader=dataloader, epochs=args.epochs, start_epoch=start_epoch)
+        
+        print(f"Batches per epoch: {len(dataloader)}")
+        print(f"Using {Config.NUM_WORKERS} parallel workers for data loading")
+
+
+        total_params = sum(p.numel() for p in model.parameters())
+        print(f"Generator parameters: {total_params:,}")
+
+    elif args.command == "generate":
+        if args.epoch is not None:
+            handler.load_checkpoint(epoch=args.epoch)
+            print(f"Loaded checkpoint from epoch {args.epoch}")
+        else:
+            handler.load_checkpoint()
+            print("Loaded best checkpoint")
+
+        start_tokens = [1] * max(1, args.seed_length)
+        x_batch = torch.tensor([start_tokens], dtype=torch.long, device=device)
+        generated_tokens = handler.generate(
+            x_batch,
+            target_length=args.length,
+            temperature=args.temperature,
+            top_k=args.top_k,
+        )
+        print(generated_tokens[:20])
+        save_midi(generated_tokens, tokenizer, args.output)
