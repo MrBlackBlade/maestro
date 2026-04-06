@@ -103,7 +103,7 @@ def generation_loop(handler, engine, stop_event, mood_queue):
             except queue.Empty:
                 pass 
 
-            while (engine.audio_queue.qsize() >= 1):
+            while (engine.audio_queue.qsize() > 1):
                 time.sleep(0.1)
 
             with torch.inference_mode():
