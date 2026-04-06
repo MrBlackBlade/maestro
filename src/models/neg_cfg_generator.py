@@ -325,10 +325,8 @@ if __name__ == "__main__":
             with tqdm(total=args.length, desc="Generating MIDI") as pbar:
                 step = 0
                 while step < args.length:
-                    if (not audio_engine.audio_queue.empty()
-                    ):
+                    while (audio_engine.audio_queue.qsize() >= 1):
                         time.sleep(0.1)
-                        continue
                     current_tokens, current_moods, next_token = handler.generate_single_step(
                         current_tokens, current_moods, target_mood_id,
                         cache=cache,

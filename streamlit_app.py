@@ -103,9 +103,8 @@ def generation_loop(handler, engine, stop_event, mood_queue):
             except queue.Empty:
                 pass 
 
-            if not engine.audio_queue.empty():
+            while (engine.audio_queue.qsize() >= 1):
                 time.sleep(0.1)
-                continue
 
             with torch.inference_mode():
                 current_tokens, current_moods, next_token = handler.generate_single_step(

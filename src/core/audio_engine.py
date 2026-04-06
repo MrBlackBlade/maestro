@@ -45,46 +45,31 @@ class AudioEngine:
 
         self.playback_done = threading.Event()
 
-        self.first_bar = False
-
         threading.Thread(target=self.render_worker, daemon=True).start()
         threading.Thread(target=self.audio_worker, daemon=True).start()
 
     def push_token(self, token_id: int, stop=False):
         self.live_token_buffer.append(token_id)
         
-        if token_id == 4 and len(self.live_token_buffer) > 0:
+        if (
+            (token_id == 4 and len(self.live_token_buffer) > 0)
+            or stop
+        ):
             self.bars_buffer_queue.put(self.live_token_buffer)
             self.live_token_buffer = []
-        
-        if stop:
-            self.bars_buffer_queue.put(self.live_token_buffer)
-            self.live_token_buffer = []
-        
-        if (not self.first_bar and self.bars_buffer_queue.qsize() > 1):
+
+        while self.bars_buffer_queue.qsize() > 0:
             current_bar = self.bars_buffer_queue.get()
-            tok_sequence = TokSequence(ids=current_bar)
-            tokenizer.complete_sequence(tok_sequence)
-            score = tokenizer.decode(tok_sequence)
-            self.render_queue.put(score)
-            self.first_bar = True
-        
-        if (self.first_bar and self.bars_buffer_queue.qsize() > 0):
-            current_bar = self.bars_buffer_queue.get()
-            tok_sequence = TokSequence(ids=current_bar)
-            tokenizer.complete_sequence(tok_sequence)
-            score = tokenizer.decode(tok_sequence)
-            self.render_queue.put(score)
-        
+            self.decode_and_render(current_bar)
         if stop:
-            while self.bars_buffer_queue.qsize() > 0:
-                current_bar = self.bars_buffer_queue.get()
-                tok_sequence = TokSequence(ids=current_bar)
-                tokenizer.complete_sequence(tok_sequence)
-                score = tokenizer.decode(tok_sequence)
-                self.render_queue.put(score)
             self.render_queue.put(None)
     
+    def decode_and_render(self, token_ids: List[int]):
+        tok_sequence = TokSequence(ids=token_ids)
+        tokenizer.complete_sequence(tok_sequence)
+        score = tokenizer.decode(tok_sequence)
+        self.render_queue.put(score)
+
     def render_to_array(self, score):
         with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as mid_f:
             mid_path = mid_f.name
@@ -136,7 +121,6 @@ class AudioEngine:
                 if self.prev_audio is not None:
                     audio = self.mix_tail(self.prev_audio, audio, self.bar_samples)
                 self.stream.write(audio[:self.bar_samples])
-                # sd.sleep(int(1.8 * 1000))
                 self.prev_audio = audio
         except Exception as e:
             print(f"Audio worker error: {e}")
