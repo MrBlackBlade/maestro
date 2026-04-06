@@ -26,10 +26,12 @@ class AudioEngine:
         soundfont: str = Config.RESOURCES_DIR / "FluidR3_GM.sf2",
         sample_rate: int = 48000,
         bar_duration: int = 2,
+        playback_wait_ahead: int = 2,
     ):
         self.sample_rate = sample_rate
         self.bar_duration = bar_duration
         self.bar_samples = int(self.sample_rate * self.bar_duration)
+        self.PLAYBACK_WAIT_AHEAD = playback_wait_ahead
 
         self.stream = sd.OutputStream(samplerate=48000, channels=2, dtype='float32')
         self.stream.start()
@@ -110,6 +112,8 @@ class AudioEngine:
             self.audio_queue.put((audio, sr))
 
     def audio_worker(self):
+        while self.audio_queue.qsize() < self.PLAYBACK_WAIT_AHEAD:
+            time.sleep(0.5)
         try:
             while True:
                 item = self.audio_queue.get()
