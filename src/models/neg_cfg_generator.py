@@ -255,6 +255,10 @@ if __name__ == "__main__":
     gen.add_argument("--epoch", type=int, default=None,
                       help="Checkpoint epoch to load (default: best)")
     gen.add_argument("--mood", type=str, default="magnificent", choices=Config.MOODS)
+    gen.add_argument("--transition-mood", type=str, default=None, choices=Config.MOODS,
+                      help="Mood to transition to during generation")
+    gen.add_argument("--transition-step", type=int, default=1024,
+                      help="Step at which to transition the mood")
     gen.add_argument("--length", type=int, default=4096)
     gen.add_argument("--output", type=str, default="generated_midi.mid")
 
@@ -318,6 +322,11 @@ if __name__ == "__main__":
         try: 
             audio_engine = AudioEngine()
             target_mood_id = Config.MOOD_TO_ID[args.mood]
+            
+            transition_mood_id = None
+            if hasattr(args, 'transition_mood') and args.transition_mood is not None:
+                transition_mood_id = Config.MOOD_TO_ID[args.transition_mood]
+                
             current_tokens = torch.tensor([[1]], device=device)
             current_moods = torch.tensor([[target_mood_id]], device=device)
             audio_engine.push_token(1)
@@ -325,6 +334,10 @@ if __name__ == "__main__":
             with tqdm(total=args.length, desc="Generating MIDI") as pbar:
                 step = 0
                 while step < args.length:
+                    if transition_mood_id is not None and step == args.transition_step:
+                        target_mood_id = transition_mood_id
+                        print(f"\n[Step {step}] Transitioning mood to: {args.transition_mood}")
+                        
                     while (audio_engine.audio_queue.qsize() > 1):
                         time.sleep(0.1)
                     current_tokens, current_moods, next_token = handler.generate_single_step(
