@@ -23,6 +23,8 @@ class Config:
 
     RESOURCES_DIR = PROJECT_ROOT / "res"
 
+    MIDI_DIR = PROJECT_ROOT / "generated_samples"
+
     # Model checkpoint directories
     MODEL_CKPT_DIR = PROJECT_ROOT / "models"
     GENERATOR_CKPT_DIR = PROJECT_ROOT / "models" / "generator"
