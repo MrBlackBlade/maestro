@@ -27,3 +27,4 @@ data/tokenized/*
 # Keep the best model checkpoints, but ignore the rest of the models
 models/*/*
 !models/*/*keep*.pt
+!models/lstm_*/*
