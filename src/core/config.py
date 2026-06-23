@@ -46,6 +46,10 @@ class Config:
     GENRE_TO_ID = {g: i for i, g in enumerate(GENRES)}
     NUM_GENRES = len(GENRES)
 
+    # Train Choices
+    TRAIN_CHOICES = ["generator", "classifier"]
+    DEFAULT_TRAIN_CHOICE = "generator"
+
     # ========================
     # Tokenizer
     # ========================
@@ -90,6 +94,7 @@ class Config:
     # ========================
     # Mood Classifier (NegCFGGenerator)
     # ========================
+    CLASSIFIER_NUM_LAYERS = 1        # Number of layers in the mood classifier
     MOOD_LOSS_WEIGHT = 0.1           # Weight of mood classifier CE relative to token CE
     MOOD_CLASSIFIER_DETACH = False   # If True, stop classifier gradients from flowing into transformer
     NEG_CFG_SCALE = 1.0              # Base negative guidance scale for penalty moods
