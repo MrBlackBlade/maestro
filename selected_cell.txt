@@ -1,0 +1,64 @@
+def plot_feature_analysis(feat_matrix: np.ndarray,
+                           v_labels: np.ndarray,
+                           a_labels: np.ndarray,
+                           cfg: dict):
+    """
+    Compute and visualise:
+    1. Pearson correlation of each feature with Valence and Arousal
+    2. Top 20 most correlated features (bar chart)
+    """
+    n_feats = feat_matrix.shape[1]
+
+    # Pearson correlation — quick check for linear relationships
+    corr_v = np.array([
+        np.corrcoef(feat_matrix[:, :, i].flatten(), v_labels)[0, 1]
+        for i in range(n_feats)
+    ])
+    corr_a = np.array([
+        np.corrcoef(feat_matrix[:, :, i].flatten(), a_labels)[0, 1]
+        for i in range(n_feats)
+    ])
+
+    # Replace NaN correlations
+    corr_v = np.nan_to_num(corr_v)
+    corr_a = np.nan_to_num(corr_a)
+
+    # Top 20 by absolute correlation with valence
+    top20_v_idx  = np.argsort(np.abs(corr_v))[::-1][:20]
+    top20_v_vals = corr_v[top20_v_idx]
+
+    top20_a_idx  = np.argsort(np.abs(corr_a))[::-1][:20]
+    top20_a_vals = corr_a[top20_a_idx]
+
+    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+    fig.suptitle('Top 20 Features by Correlation with V-A Labels',
+                 fontsize=13, color='white')
+
+    for ax, idx, vals, label, color in [
+        (axes[0], top20_v_idx, top20_v_vals, 'Valence', COLORS['valence']),
+        (axes[1], top20_a_idx, top20_a_vals, 'Arousal', COLORS['arousal']),
+    ]:
+        bar_colors = [color if v >= 0 else '#ff6b6b' for v in vals]
+        bars = ax.barh(range(20), vals[::-1], color=bar_colors[::-1],
+                       alpha=0.85, edgecolor='#0f0f1a')
+        ax.set_yticks(range(20))
+        ax.set_yticklabels([f'feat_{i}' for i in idx[::-1]],
+                            fontsize=7)
+        ax.set_title(f'Top 20 → {label}', color='white')
+        ax.set_xlabel('Pearson r')
+        ax.axvline(0, color='#666688', lw=0.8)
+        ax.grid(True, alpha=0.2, axis='x')
+
+    plt.tight_layout()
+    plt.savefig(f"{cfg['output_dir']}/feature_correlation.png",
+                dpi=120, bbox_inches='tight', facecolor='#0f0f1a')
+    plt.show()
+
+    print(f"\nMean |r| with Valence: {np.mean(np.abs(corr_v)):.4f}")
+    print(f"Mean |r| with Arousal: {np.mean(np.abs(corr_a)):.4f}")
+    print(f"Max  |r| with Valence: {np.max(np.abs(corr_v)):.4f}")
+    print(f"Max  |r| with Arousal: {np.max(np.abs(corr_a)):.4f}")
+
+
+plot_feature_analysis(FEATURE_MATRIX, VALENCE_LABELS,
+                       AROUSAL_LABELS, CONFIG)

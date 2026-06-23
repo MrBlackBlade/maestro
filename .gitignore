@@ -3,12 +3,22 @@ datasets/*
 !datasets/.gitkeep
 *.h5
 
+# Resources
+res/*
+
+# Ignore the large tokenized dataset folder
+data/tokenized/*
+
 *.mid
 *.midi
 !generated_samples/*.mid
 !generated_samples/*.midi
 generated_samples/temp_*.mid
 generated_samples/temp_*.midi
+
+# Model files
+models/*/*
+!models/*/*keep*.pt
 
 # Python
 __pycache__/
@@ -17,13 +27,3 @@ __pycache__/
 *.pyd
 *.pyw
 *.pyz
-
-# Resources
-res/*
-
-# Ignore the large tokenized dataset folder
-data/tokenized/*
-
-# Keep the best model checkpoints, but ignore the rest of the models
-models/*/*
-!models/*/*keep*.pt
