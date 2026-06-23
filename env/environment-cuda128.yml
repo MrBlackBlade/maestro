@@ -13,8 +13,14 @@ dependencies:
   - scikit-learn
   - pytorch-cuda=12.8
   - tensorflow
+  - tqdm
+  - streamlit
+  - scipy
   - pip:
       - --index-url https://download.pytorch.org/whl/cu128
+      - symusic>=0.5.0
+      - miditok
+      - midi2audio
       - torch
       - torchvision
       - torchaudio

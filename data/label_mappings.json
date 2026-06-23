@@ -1,0 +1,23 @@
+{
+  "mood_to_id": {
+    "angry": 0,
+    "exciting": 1,
+    "fear": 2,
+    "funny": 3,
+    "happy": 4,
+    "lazy": 5,
+    "magnificent": 6,
+    "quiet": 7,
+    "romantic": 8,
+    "sad": 9,
+    "warm": 10
+  },
+  "genre_to_id": {
+    "classical": 0,
+    "country": 1,
+    "jazz": 2,
+    "pop": 3,
+    "rock": 4,
+    "traditional": 5
+  }
+}
