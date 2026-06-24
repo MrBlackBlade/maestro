@@ -133,6 +133,18 @@ class FeatureExtractor:
         'p95':    lambda x: np.percentile(x, 95) if len(x) > 0 else np.nan,
     }
 
+    def __init__(self):
+        # FIX 2: Generate dummy data to capture canonical feature insertion order.
+        # This matches the DataFrame column order generated during training.
+        dummy_len = 1000
+        dummy_signals = {
+            'bvp': np.linspace(0.1, 1.0, dummy_len),
+            'gsr': np.linspace(0.1, 1.0, dummy_len),
+            'skt': np.linspace(0.1, 1.0, dummy_len)
+        }
+        dummy_feats = self.extract_features(dummy_signals)
+        self.feature_keys = list(dummy_feats.keys())
+
     def _stat_features(self, arr: np.ndarray, prefix: str) -> dict:
         feats = {}
         for name, fn in self.STAT_FUNS.items():
@@ -197,7 +209,9 @@ class MAESTROInferencePipeline:
     """
     Real-time inference pipeline for MAESTRO.
     """
-    def __init__(self, model_v: nn.Module, model_a: nn.Module, n_features: int, cfg: dict):
+    def __init__(self, model_v: nn.Module, model_a: nn.Module, n_features: int, cfg: dict,
+                 scaler_v: tuple[np.ndarray, np.ndarray], 
+                 scaler_a: tuple[np.ndarray, np.ndarray]):
         self.model_v      = model_v.eval()
         self.model_a      = model_a.eval()
         self.device       = next(self.model_v.parameters()).device
@@ -207,6 +221,10 @@ class MAESTROInferencePipeline:
         self.cfg          = cfg
         self.calibrated   = False
         self.n_features   = n_features
+        
+        # FIX 1: Store standard scalers
+        self.scaler_v_mean, self.scaler_v_scale = scaler_v
+        self.scaler_a_mean, self.scaler_a_scale = scaler_a
 
     def calibrate(self, baseline_signals: dict, baseline_annot: dict = None):
         physio_df = pd.DataFrame(baseline_signals)
@@ -241,14 +259,30 @@ class MAESTROInferencePipeline:
         }
         
         feats = self.extractor.extract_features(win)
-        feat_vec = np.array(list(feats.values()), dtype=np.float32)
-        feat_vec = np.nan_to_num(feat_vec, nan=0.0)[:self.n_features]
+        
+        # --- DIAGNOSTIC HEALTH CHECK ---
+        nan_count = sum(1 for v in feats.values() if np.isnan(v))
+        if nan_count > 0:
+            print(f"[WARN] Pipeline feature extraction failed! {nan_count}/{len(feats)} features are NaNs!")
 
-        x = torch.from_numpy(feat_vec).float().unsqueeze(0).unsqueeze(0).to(self.device)
+        # FIX 2: Use established canonical feature order (no sorted() hack)
+        feat_vec = np.array([feats[k] for k in self.extractor.feature_keys], dtype=np.float32)
+        feat_vec = np.nan_to_num(feat_vec, nan=0.0)
+
+        # FIX 3: Enforce strict dimension matching. Drop silent truncations.
+        if len(feat_vec) != self.n_features:
+            raise ValueError(f"Feature dimension mismatch! Expected {self.n_features}, got {len(feat_vec)}.")
+
+        # FIX 1: Apply standard scaling corresponding to each fold's training statistics
+        feat_vec_v = (feat_vec - self.scaler_v_mean) / self.scaler_v_scale
+        feat_vec_a = (feat_vec - self.scaler_a_mean) / self.scaler_a_scale
+
+        x_v = torch.from_numpy(feat_vec_v).float().unsqueeze(0).unsqueeze(0).to(self.device)
+        x_a = torch.from_numpy(feat_vec_a).float().unsqueeze(0).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
-            pred_v = self.model_v(x)
-            pred_a = self.model_a(x)
+            pred_v = self.model_v(x_v)
+            pred_a = self.model_a(x_a)
 
         v_norm = pred_v.item()
         a_norm = pred_a.item()

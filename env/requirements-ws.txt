@@ -1,0 +1,4 @@
+# Optional dependencies for the inference WebSocket server and test client.
+fastapi
+uvicorn
+websockets
