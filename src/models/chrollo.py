@@ -82,6 +82,7 @@ class ChrolloHandler(GeneralModelHandler):
         super().__init__(model, optimizer, scheduler, self.MODEL_NAME)
         self.criterion = criterion
         self.classifier_handler = classifier_handler
+        self.dynamic_temperature = 0
 
     # ── Training ─────────────────────────────────────────────────────────
 
@@ -228,8 +229,24 @@ class ChrolloHandler(GeneralModelHandler):
             diffs = penalty_logits - uncond_logits.unsqueeze(0)        # [K, V]
             final_logits = final_logits - (scales.unsqueeze(1) * diffs).sum(0)
 
+        # ── Shannon-Entropy + Dynamic Temperature ────────────────────────
+        raw_probs = F.softmax(final_logits, dim=-1)
+        entropy = -(raw_probs * torch.log(raw_probs + 1e-9)).sum().item()
+        if entropy < Config.ENTROPY_SIGNIFICANCE_THRESH:
+            if entropy < Config.ENTROPY_LOW:
+                # Model is overly confident / looping. Build pressure over time.
+                self.dynamic_temperature += Config.D_TEMP_UP
+            if entropy > Config.ENTROPY_HIGH:
+                # Model is being creative. Release the pressure.
+                self.dynamic_temperature = max(0.0, self.dynamic_temperature - Config.D_TEMP_DOWN)
+
+            # Cap the maximum pressure so it doesn't devolve into pure noise
+            self.dynamic_temperature = min(self.dynamic_temperature, Config.D_TEMP_MAX)
+
+        current_temp = temperature + self.dynamic_temperature
+
         # ── Temperature + top-p + sample ─────────────────────────────────
-        final_logits = final_logits / temperature
+        final_logits = final_logits / current_temp
 
         probs = F.softmax(final_logits, dim=-1)
         sorted_probs, sorted_indices = torch.sort(probs, descending=True)
@@ -250,7 +267,7 @@ class ChrolloHandler(GeneralModelHandler):
 
         updated_tokens = torch.cat((current_tokens, next_token), dim=1)
         updated_moods = torch.cat((current_moods, next_mood), dim=1)
-        return updated_tokens, updated_moods, next_token
+        return updated_tokens, updated_moods, next_token, entropy, current_temp
 
 
 # ---------------------------------------------------------------------------
@@ -273,8 +290,8 @@ if __name__ == "__main__":
     gen = sub.add_parser("generate")
     gen.add_argument("--epoch", type=int, default=None,
                       help="Checkpoint epoch to load (default: best)")
-    gen.add_argument("--mood", type=str, default="exciting", choices=Config.MOODS)
-    gen.add_argument("--transition-mood", type=str, default="romantic", choices=Config.MOODS,
+    gen.add_argument("--mood", type=str, default="romantic", choices=Config.MOODS)
+    gen.add_argument("--transition-mood", type=str, default="angry", choices=Config.MOODS,
                       help="Mood to transition to during generation")
     gen.add_argument("--transition-step", type=int, default=1024,
                       help="Step at which to transition the mood")
@@ -348,6 +365,8 @@ if __name__ == "__main__":
 
     # ── Generate ─────────────────────────────────────────────────────────
     elif args.command == "generate":
+        entropy_list = []
+        temp_list = []
         chrollo_handler.load_checkpoint(epoch=args.epoch)
         chrollo.eval()
 
@@ -380,11 +399,13 @@ if __name__ == "__main__":
                         
                     while (audio_engine.audio_queue.qsize() > 1):
                         time.sleep(0.1)
-                    current_tokens, current_moods, next_token = chrollo_handler.generate_single_step(
+                    current_tokens, current_moods, next_token, entropy, current_temp = chrollo_handler.generate_single_step(
                         current_tokens, current_moods, target_mood_id,
                         generator_cache=generator_cache,
                         classifier_cache=classifier_cache,
                     )
+                    entropy_list.append(entropy)
+                    temp_list.append(current_temp)
                     audio_engine.push_token(next_token.item())
                     step += 1
                     pbar.update(1)
@@ -395,4 +416,7 @@ if __name__ == "__main__":
 
         generated_tokens = current_tokens.squeeze(0).cpu().tolist()
         save_midi(generated_tokens, tokenizer, args.output)
+        import json
+        json.dump(entropy_list, open("entropy.json", "w"), indent=4)
+        json.dump(temp_list, open("temperature.json", "w"), indent=4)
         print(f"Saved {len(generated_tokens)} tokens to {args.output}")

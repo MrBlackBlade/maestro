@@ -109,6 +109,15 @@ class Config:
     GENERATE_LENGTH = 256            # Default number of tokens to generate
     USE_KV_CACHE = True              # KV caching for faster autoregressive generation
 
+    # Entropy -> How chaotic is the model?
+    ENTROPY_SIGNIFICANCE_THRESH = 0.1       # Low enough to consider value? (not a periodic peak)
+    ENTROPY_LOW = 0.005                     # Is it considered low enough to increment temperature?
+    ENTROPY_HIGH = 0.05                     # Is it considered high enough to decrement temperature?
+
+    D_TEMP_UP = 0.0025              # temperature increment magnitude
+    D_TEMP_DOWN = 0.01              # temperature decrement magnitude
+    D_TEMP_MAX = 0.8                # temperature maximum offset
+
     # ========================
     # Device
     # ========================
