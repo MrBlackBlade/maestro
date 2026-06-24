@@ -1,6 +1,7 @@
 
 import argparse
 import math
+import numpy as np
 import time
 import torch
 import torch.nn as nn
@@ -83,6 +84,8 @@ class ChrolloHandler(GeneralModelHandler):
         self.criterion = criterion
         self.classifier_handler = classifier_handler
         self.dynamic_temperature = 0
+        self.current_entropy = 0
+        self.delta_entropy_list = []
 
     # ── Training ─────────────────────────────────────────────────────────
 
@@ -137,7 +140,7 @@ class ChrolloHandler(GeneralModelHandler):
         uncond_mood_id: int = Config.NUM_MOODS,
         pos_cfg_scale: float = Config.POS_CFG_SCALE,
         neg_cfg_scale: float = Config.NEG_CFG_SCALE,
-        temperature: float = 1.20,
+        temperature: float = Config.D_TEMP_MIN,
         top_p: float = 0.95,
         generator_cache: KVCache | None = None,
         classifier_cache: KVCache | None = None,
@@ -232,7 +235,16 @@ class ChrolloHandler(GeneralModelHandler):
         # ── Shannon-Entropy + Dynamic Temperature ────────────────────────
         raw_probs = F.softmax(final_logits, dim=-1)
         entropy = -(raw_probs * torch.log(raw_probs + 1e-9)).sum().item()
-        if entropy < Config.ENTROPY_SIGNIFICANCE_THRESH:
+        delta_entropy = np.abs(entropy - self.current_entropy)
+        if len(self.delta_entropy_list) < 100:
+            self.delta_entropy_list.append(delta_entropy)
+        else:
+            self.delta_entropy_list.pop(0)
+            self.delta_entropy_list.append(delta_entropy)
+        avg_delta_entropy = np.average(self.delta_entropy_list)
+        self.current_entropy = entropy
+
+        if len(self.delta_entropy_list) == 100:
             if entropy < Config.ENTROPY_LOW:
                 # Model is overly confident / looping. Build pressure over time.
                 self.dynamic_temperature += Config.D_TEMP_UP
@@ -267,7 +279,7 @@ class ChrolloHandler(GeneralModelHandler):
 
         updated_tokens = torch.cat((current_tokens, next_token), dim=1)
         updated_moods = torch.cat((current_moods, next_mood), dim=1)
-        return updated_tokens, updated_moods, next_token, entropy, current_temp
+        return updated_tokens, updated_moods, next_token, avg_delta_entropy, current_temp
 
 
 # ---------------------------------------------------------------------------
@@ -291,11 +303,11 @@ if __name__ == "__main__":
     gen.add_argument("--epoch", type=int, default=None,
                       help="Checkpoint epoch to load (default: best)")
     gen.add_argument("--mood", type=str, default="romantic", choices=Config.MOODS)
-    gen.add_argument("--transition-mood", type=str, default="angry", choices=Config.MOODS,
+    gen.add_argument("--transition-mood", type=str, default="magnificent", choices=Config.MOODS,
                       help="Mood to transition to during generation")
     gen.add_argument("--transition-step", type=int, default=1024,
                       help="Step at which to transition the mood")
-    gen.add_argument("--length", type=int, default=4096)
+    gen.add_argument("--length", type=int, default=6000)
     gen.add_argument("--output", type=str, default="generated_midi.mid")
 
     args = parser.parse_args()
