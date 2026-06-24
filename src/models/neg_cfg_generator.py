@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from src.core.config import Config
+from src.core.affect_bridge import affect_to_mood_match
 from src.core.audio_engine import AudioEngine
 from src.core.utils import get_tokenizer, save_midi
 from src.dataloaders.mood_dataset_cached import get_mood_cached_dataloader
@@ -255,6 +256,10 @@ if __name__ == "__main__":
     gen.add_argument("--epoch", type=int, default=None,
                       help="Checkpoint epoch to load (default: best)")
     gen.add_argument("--mood", type=str, default="magnificent", choices=Config.MOODS)
+    gen.add_argument("--valence", type=float, default=None,
+                      help="Continuous valence value to map into a mood")
+    gen.add_argument("--arousal", type=float, default=None,
+                      help="Continuous arousal value to map into a mood")
     gen.add_argument("--transition-mood", type=str, default=None, choices=Config.MOODS,
                       help="Mood to transition to during generation")
     gen.add_argument("--transition-step", type=int, default=1024,
@@ -321,7 +326,19 @@ if __name__ == "__main__":
             cache = None
         try: 
             audio_engine = AudioEngine()
-            target_mood_id = Config.MOOD_TO_ID[args.mood]
+            # Priority: if V/A are explicitly provided, map them to a mood here.
+            if args.valence is not None or args.arousal is not None:
+                if args.valence is None or args.arousal is None:
+                    raise SystemExit("Both --valence and --arousal must be provided together.")
+                mapped = affect_to_mood_match(args.valence, args.arousal)
+                target_mood_id = mapped.mood_id
+                print(
+                    f"Mapped V/A ({args.valence:.3f}, {args.arousal:.3f}) -> "
+                    f"{mapped.mood_name} (id={target_mood_id})"
+                )
+            else:
+                target_mood_id = Config.MOOD_TO_ID[args.mood]
+                print(f"Using mood '{args.mood}' (id={target_mood_id})")
             
             transition_mood_id = None
             if hasattr(args, 'transition_mood') and args.transition_mood is not None:
