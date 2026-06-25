@@ -307,7 +307,7 @@ if __name__ == "__main__":
                       help="Mood to transition to during generation")
     gen.add_argument("--transition-step", type=int, default=1024,
                       help="Step at which to transition the mood")
-    gen.add_argument("--length", type=int, default=6000)
+    gen.add_argument("--length", type=int, default=4096)
     gen.add_argument("--output", type=str, default="generated_midi.mid")
 
     args = parser.parse_args()
@@ -424,11 +424,12 @@ if __name__ == "__main__":
         finally:
             audio_engine.push_token(4, stop=True)
             audio_engine.playback_done.wait()
+            generated_tokens = current_tokens.squeeze(0).cpu().tolist()
+            save_midi(generated_tokens, tokenizer, args.output)
+            # import json
+            # json.dump(entropy_list, open("entropy.json", "w"), indent=4)
+            # json.dump(temp_list, open("temperature.json", "w"), indent=4)
+            print(f"Saved {len(generated_tokens)} tokens to {args.output}")
+            
 
 
-        generated_tokens = current_tokens.squeeze(0).cpu().tolist()
-        save_midi(generated_tokens, tokenizer, args.output)
-        # import json
-        # json.dump(entropy_list, open("entropy.json", "w"), indent=4)
-        # json.dump(temp_list, open("temperature.json", "w"), indent=4)
-        print(f"Saved {len(generated_tokens)} tokens to {args.output}")

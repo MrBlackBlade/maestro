@@ -211,7 +211,7 @@ class MoodMusicSession(InferenceSession):
         self.task = None
         
         # Start with a neutral or default mood until the first prediction
-        self.target_mood_id = 0  # Unconditional mood id fallback
+        self.target_mood_id = 8  # Unconditional mood id fallback
 
     async def start_generator(self):
         self.task = asyncio.create_task(self.generation_loop())

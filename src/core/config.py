@@ -98,7 +98,7 @@ class Config:
     MOOD_LOSS_WEIGHT = 0.1           # Weight of mood classifier CE relative to token CE
     MOOD_CLASSIFIER_DETACH = False   # If True, stop classifier gradients from flowing into transformer
     NEG_CFG_SCALE = 1.0              # Base negative guidance scale for penalty moods
-    POS_CFG_SCALE = 3.0              # Positive guidance scale for target mood
+    POS_CFG_SCALE = 2.0              # Positive guidance scale for target mood
 
     # ========================
     # Generation / Inference
@@ -117,7 +117,7 @@ class Config:
 
     D_TEMP_UP = 0.0005              # temperature increment magnitude
     D_TEMP_DOWN = 0.001              # temperature decrement magnitude
-    D_TEMP_MIN = 1.20
+    D_TEMP_MIN = 1.15
     D_TEMP_MAX = 0.15                # temperature maximum offset
 
     # ========================
