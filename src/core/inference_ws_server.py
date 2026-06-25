@@ -1,21 +1,25 @@
 """
-FastAPI WebSocket server for continuous MAESTRO affect inference.
+FastAPI WebSocket server for continuous MAESTRO affect inference & real-time Chrollo Music Generation.
 
 Run:
     uvicorn src.core.inference_ws_server:app --host 0.0.0.0 --port 8000 --reload
 
-WebSocket endpoint:
-    ws://localhost:8000/ws/inference
+WebSocket endpoints:
+    ws://localhost:8000/ws/inference     (Physiological Affect Inference only)
+    ws://localhost:8000/ws/mood_music  (Combined Affect Inference + Real-time MIDI generation)
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
 import numpy as np
+import torch
+import torch.nn as nn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
@@ -32,24 +36,70 @@ from src.core.simulate_inference import (
     run_inference,
 )
 
+# --- Added imports for Music Generation ---
+from src.core.config import Config
+from src.core.utils import get_tokenizer
+from src.models.mood_classifier import MoodClassifier, MoodClassifierHandler
+from src.models.chrollo import Chrollo, ChrolloHandler 
+
 logger = logging.getLogger(__name__)
 
+# Globals for models
 _models: LoadedModels | None = None
+_chrollo: Chrollo | None = None
+_mood_classifier: MoodClassifier | None = None
+_chrollo_handler: ChrolloHandler | None = None
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global _models
+    global _models, _chrollo, _mood_classifier, _chrollo_handler
+    
+    # 1. Load LSTM Physiological Models
     logger.info("Loading LSTM models for WebSocket inference...")
     _models = load_lstm_models()
     logger.info("Models ready on %s", _models.device)
+    
+    # 2. Load Chrollo Music Models
+    logger.info("Loading Chrollo and Classifier models for Music generation...")
+    tokenizer = get_tokenizer()
+    vocab_size = tokenizer.vocab_size
+    device = Config.DEVICE
+
+    _mood_classifier = MoodClassifier(vocab_size=vocab_size).to(device)
+    mc_opt = torch.optim.AdamW(_mood_classifier.parameters())
+    mc_sch = torch.optim.lr_scheduler.CosineAnnealingLR(mc_opt, T_max=1)
+    mc_criterion = nn.CrossEntropyLoss()
+    mc_handler = MoodClassifierHandler(
+        model=_mood_classifier, optimizer=mc_opt, scheduler=mc_sch, criterion=mc_criterion
+    )
+    mc_handler.load_checkpoint()  # Loads best epoch by default
+
+    _chrollo = Chrollo(vocab_size=vocab_size).to(device)
+    chr_opt = torch.optim.AdamW(_chrollo.parameters())
+    chr_sch = torch.optim.lr_scheduler.CosineAnnealingLR(chr_opt, T_max=1)
+    chr_criterion = nn.CrossEntropyLoss(ignore_index=0)
+    _chrollo_handler = ChrolloHandler(
+        model=_chrollo, optimizer=chr_opt, scheduler=chr_sch, criterion=chr_criterion, classifier_handler=mc_handler
+    )
+    _chrollo_handler.load_checkpoint()
+
+    _mood_classifier.eval()
+    _chrollo.eval()
+    logger.info("Music generation models loaded successfully.")
+
     yield
+    
+    # Cleanup
     _models = None
+    _chrollo = None
+    _mood_classifier = None
+    _chrollo_handler = None
 
 
 app = FastAPI(
-    title="MAESTRO Inference WebSocket",
-    description="Stream physiological signals and receive continuous valence/arousal predictions.",
+    title="MAESTRO Inference & Music WebSocket",
+    description="Stream physiological signals and receive continuous predictions + generated MIDI tokens.",
     lifespan=lifespan,
 )
 
@@ -76,6 +126,9 @@ def _signals_to_lists(signals: dict[str, np.ndarray]) -> dict[str, list[float]]:
     return {k: np.asarray(v, dtype=np.float64).ravel().tolist() for k, v in signals.items()}
 
 
+# ---------------------------------------------------------------------------
+# Standard Inference Session (Physiological Only)
+# ---------------------------------------------------------------------------
 class InferenceSession:
     """Per-connection state: pipeline + optional chunk buffer for streaming."""
 
@@ -137,94 +190,140 @@ class InferenceSession:
                 f"Buffered {n} samples but need at least {MIN_SIGNAL_SAMPLES} to predict."
             )
             
-        # FIX: Explicitly slice and copy into a fresh array context 
-        # so .clear() inside reset_chunks() doesn't wipe out the data being passed!
         if n > min_samples:
             window = {k: np.copy(v[-min_samples:]) for k, v in buffered.items()}
         else:
             window = {k: np.copy(v) for k, v in buffered.items()}
             
-        # Now it is safe to empty the session accumulators
         self.reset_chunks()
         return self.predict(window)
 
 
-@app.get("/health")
-def health() -> JSONResponse:
-    return JSONResponse(
-        {
-            "status": "ok",
-            "models_loaded": _models is not None,
-            "device": str(_models.device) if _models else None,
-            "websocket_path": "/ws/inference",
-            "recommended_samples": RECOMMENDED_SIGNAL_SAMPLES,
-            "min_samples": MIN_SIGNAL_SAMPLES,
-        }
-    )
+# ---------------------------------------------------------------------------
+# Integrated Session (Physiological + Music Generation)
+# ---------------------------------------------------------------------------
+class MoodMusicSession(InferenceSession):
+    def __init__(self, ws: WebSocket):
+        super().__init__()
+        self.ws = ws
+        self.active = True
+        self.client_queue_size = 0
+        self.task = None
+        
+        # Start with a neutral or default mood until the first prediction
+        self.target_mood_id = 0  # Unconditional mood id fallback
+
+    async def start_generator(self):
+        self.task = asyncio.create_task(self.generation_loop())
+
+    def stop(self):
+        self.active = False
+        if self.task:
+            self.task.cancel()
+
+    def predict(self, signals: dict[str, Any]) -> dict[str, Any]:
+        result = super().predict(signals)
+        
+        # Intercept the prediction to update the current target mood
+        if result.get("type") == "ok":
+            mood_name = result.get("mood", {}).get("name")
+            if mood_name and mood_name in Config.MOOD_TO_ID:
+                self.target_mood_id = Config.MOOD_TO_ID[mood_name]
+                
+        return result
+
+    async def generation_loop(self):
+        """Background task generating MIDI tokens autonomously based on the current mood."""
+        device = Config.DEVICE
+        num_branches = Config.NUM_MOODS + 1
+        
+        if Config.USE_KV_CACHE:
+            from src.models.cached_transformer import KVCache
+            generator_cache = KVCache.from_model(_chrollo, batch_size=num_branches)
+            classifier_cache = KVCache.from_model(_mood_classifier)
+        else:
+            generator_cache = None
+            classifier_cache = None
+
+        current_tokens = torch.tensor([[1]], device=device)
+        current_moods = torch.tensor([[self.target_mood_id]], device=device)
+        
+        # Send Start token
+        await _send_json(self.ws, _ok({"event": "music_token", "token": 1, "mood_id": self.target_mood_id}))
+
+        while self.active:
+            # Backpressure logic: Don't generate if client's audio buffer is full
+            if self.client_queue_size > 1:
+                await asyncio.sleep(0.1)
+                continue
+
+            try:
+                # Run the model iteration thread-safely to not block the FastAPI loop
+                current_tokens, current_moods, next_token = await asyncio.to_thread(
+                    _chrollo_handler.generate_single_step,
+                    current_tokens, 
+                    current_moods, 
+                    self.target_mood_id,
+                    generator_cache=generator_cache,
+                    classifier_cache=classifier_cache
+                )
+
+                token_val = next_token.item()
+                await _send_json(self.ws, _ok({
+                    "event": "music_token", 
+                    "token": token_val,
+                    "mood_id": self.target_mood_id
+                }))
+                
+                # Tiny yield to let incoming data chunks process
+                await asyncio.sleep(0.01)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Background generation loop encountered an error: {e}")
+                break
 
 
-@app.get("/schema")
-def schema() -> JSONResponse:
-    return JSONResponse(
-        {
-            "websocket_url": "ws://<host>:<port>/ws/inference",
-            "client_to_server": {
-                "ping": {"type": "ping"},
-                "calibrate": {
-                    "type": "calibrate",
-                    "signals": {"bvp": "[float, ...]", "gsr": "[float, ...]", "skt": "[float, ...]"},
-                    "note": f"Each array should have >= {MIN_SIGNAL_SAMPLES} samples (recommended {RECOMMENDED_SIGNAL_SAMPLES} at 1 kHz).",
-                },
-                "predict": {
-                    "type": "predict",
-                    "signals": {"bvp": "[float, ...]", "gsr": "[float, ...]", "skt": "[float, ...]"},
-                },
-                "predict_chunk": {
-                    "type": "predict_chunk",
-                    "signals": {"bvp": "[float, ...]", "gsr": "[float, ...]", "skt": "[float, ...]"},
-                    "min_samples": RECOMMENDED_SIGNAL_SAMPLES,
-                    "flush": "optional bool — predict even if buffer < min_samples",
-                },
-                "reset": {"type": "reset"},
-                "use_dummy": {
-                    "type": "use_dummy",
-                    "source": "optional 'h5' | 'synthetic' (default: h5 if file exists else synthetic)",
-                    "n_samples": RECOMMENDED_SIGNAL_SAMPLES,
-                    "pred_idx": 10,
-                },
-            },
-            "server_to_client": {
-                "ok": "type=ok plus event-specific fields",
-                "error": {"type": "error", "message": "human-readable reason"},
-                "prediction_fields": [
-                    "sequence",
-                    "valence",
-                    "arousal",
-                    "valence_norm",
-                    "arousal_norm",
-                    "mood",
-                    "music_params",
-                ],
-            },
-        }
-    )
-
-
+# ---------------------------------------------------------------------------
+# Original Inference Route
+# ---------------------------------------------------------------------------
 @app.websocket("/ws/inference")
 async def inference_ws(ws: WebSocket) -> None:
     await ws.accept()
     session = InferenceSession()
-    await _send_json(
-        ws,
-        _ok(
-            {
-                "event": "connected",
-                "message": "Send 'calibrate' then 'predict' or 'predict_chunk'.",
-                "min_samples": MIN_SIGNAL_SAMPLES,
-                "recommended_samples": RECOMMENDED_SIGNAL_SAMPLES,
-            }
-        ),
-    )
+    await _send_json(ws, _ok({"event": "connected"}))
+    try:
+        while True:
+            raw = await ws.receive_text()
+            msg = json.loads(raw)
+            msg_type = msg.get("type")
+            
+            if msg_type == "calibrate":
+                await _send_json(ws, session.calibrate(msg.get("signals", msg)))
+            elif msg_type == "predict_chunk":
+                min_samples = int(msg.get("min_samples", RECOMMENDED_SIGNAL_SAMPLES))
+                flush = bool(msg.get("flush", False))
+                resp = session.predict_chunk(msg.get("signals", msg), min_samples=min_samples, flush=flush)
+                if resp:
+                    await _send_json(ws, resp)
+    except WebSocketDisconnect:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Integrated Music + Inference Route
+# ---------------------------------------------------------------------------
+@app.websocket("/ws/mood_music")
+async def mood_music_ws(ws: WebSocket) -> None:
+    await ws.accept()
+    session = MoodMusicSession(ws)
+    await session.start_generator()
+
+    await _send_json(ws, _ok({
+        "event": "connected", 
+        "message": "Mood+Music Endpoint connected. Send 'calibrate' to begin."
+    }))
 
     try:
         while True:
@@ -236,69 +335,35 @@ async def inference_ws(ws: WebSocket) -> None:
                 continue
 
             msg_type = msg.get("type")
+
+            # Client updates us on how many tokens it currently has buffered
+            if msg_type == "queue_status":
+                session.client_queue_size = msg.get("qsize", 0)
+                continue
+            
+            # Standard Physiological Pipeline
             try:
-                if msg_type == "ping":
-                    await _send_json(ws, _ok({"event": "pong"}))
-
-                elif msg_type == "reset":
-                    session = InferenceSession()
-                    await _send_json(ws, _ok({"event": "reset"}))
-
-                elif msg_type == "use_dummy":
-                    source = msg.get("source")
-                    n_samples = int(msg.get("n_samples", RECOMMENDED_SIGNAL_SAMPLES))
-                    if source == "synthetic" or (
-                        source is None and not DEFAULT_DATASET_PATH.exists()
-                    ):
-                        baseline = generate_dummy_signals(n_samples=n_samples, seed=42)
-                        window = generate_dummy_signals(n_samples=n_samples, seed=99)
-                    else:
-                        pred_idx = int(msg.get("pred_idx", 10))
-                        baseline, window, meta = load_dataset_windows(pred_idx=pred_idx)
-                        await _send_json(
-                            ws,
-                            _ok({"event": "dummy_data", "source": "h5", "meta": meta}),
-                        )
-                        await _send_json(ws, _ok({"event": "dummy_baseline", "signals": _signals_to_lists(baseline)}))
-                        await _send_json(ws, _ok({"event": "dummy_window", "signals": _signals_to_lists(window)}))
-                        continue
-
-                    await _send_json(ws, _ok({"event": "dummy_data", "source": "synthetic", "n_samples": n_samples}))
-                    await _send_json(ws, _ok({"event": "dummy_baseline", "signals": _signals_to_lists(baseline)}))
-                    await _send_json(ws, _ok({"event": "dummy_window", "signals": _signals_to_lists(window)}))
-
-                elif msg_type == "calibrate":
-                    signals = msg.get("signals", msg)
-                    response = session.calibrate(signals)
-                    await _send_json(ws, response)
-
-                elif msg_type == "predict":
-                    signals = msg.get("signals", msg)
-                    response = session.predict(signals)
+                if msg_type == "calibrate":
+                    response = session.calibrate(msg.get("signals", msg))
                     await _send_json(ws, response)
 
                 elif msg_type == "predict_chunk":
                     signals = msg.get("signals", msg)
                     min_samples = int(msg.get("min_samples", RECOMMENDED_SIGNAL_SAMPLES))
                     flush = bool(msg.get("flush", False))
+                    
                     response = session.predict_chunk(signals, min_samples=min_samples, flush=flush)
                     if response is not None:
                         await _send_json(ws, response)
-
-                else:
-                    await _send_json(
-                        ws,
-                        _error_message(
-                            ValueError(
-                                f"Unknown type '{msg_type}'. "
-                                "Use ping | calibrate | predict | predict_chunk | reset | use_dummy."
-                            )
-                        ),
-                    )
+                
+                elif msg_type == "ping":
+                    await _send_json(ws, _ok({"event": "pong"}))
 
             except Exception as exc:
-                logger.exception("WebSocket handler error")
+                logger.exception("Inference error in mood_music endpoint")
                 await _send_json(ws, _error_message(exc))
 
     except WebSocketDisconnect:
-        logger.info("Client disconnected")
+        logger.info("Client disconnected from mood_music")
+    finally:
+        session.stop()
