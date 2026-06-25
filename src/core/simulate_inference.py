@@ -344,6 +344,7 @@ def main() -> None:
         "minimal_generator",
         "mood_generator",
         "neg_cfg_generator",
+        "chrollo"
     ]
     print("Available generator models:")
     for i, model in enumerate(available_models, 1):
@@ -355,7 +356,7 @@ def main() -> None:
     elif choice in available_models:
         selected_model = choice
     else:
-        selected_model = "neg_cfg_generator"
+        selected_model = "chrollo"
 
     run_generator_subprocess(result.valence_norm, result.arousal_norm, selected_model)
 
