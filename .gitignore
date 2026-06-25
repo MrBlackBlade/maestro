@@ -9,6 +9,8 @@ datasets/*
 !generated_samples/*.midi
 generated_samples/temp_*.mid
 generated_samples/temp_*.midi
+*.mp3
+*.wav
 
 # Python
 __pycache__/

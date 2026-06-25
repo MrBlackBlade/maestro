@@ -46,6 +46,10 @@ class Config:
     GENRE_TO_ID = {g: i for i, g in enumerate(GENRES)}
     NUM_GENRES = len(GENRES)
 
+    # Train Choices
+    TRAIN_CHOICES = ["generator", "classifier"]
+    DEFAULT_TRAIN_CHOICE = "generator"
+
     # ========================
     # Tokenizer
     # ========================
@@ -90,6 +94,7 @@ class Config:
     # ========================
     # Mood Classifier (NegCFGGenerator)
     # ========================
+    CLASSIFIER_NUM_LAYERS = 1        # Number of layers in the mood classifier
     MOOD_LOSS_WEIGHT = 0.1           # Weight of mood classifier CE relative to token CE
     MOOD_CLASSIFIER_DETACH = False   # If True, stop classifier gradients from flowing into transformer
     NEG_CFG_SCALE = 1.0              # Base negative guidance scale for penalty moods
@@ -103,6 +108,17 @@ class Config:
     TOP_P = 0.95                     # Nucleus sampling threshold
     GENERATE_LENGTH = 256            # Default number of tokens to generate
     USE_KV_CACHE = True              # KV caching for faster autoregressive generation
+
+    # Dynamic Temperature / Entropy
+    # Entropy -> How chaotic is the model?
+    ENTROPY_SIGNIFICANCE_THRESH = 0.1       # Low enough to consider value? (not a periodic peak)
+    ENTROPY_LOW = 0.2                     # Is it considered low enough to increment temperature?
+    ENTROPY_HIGH = 0.5                     # Is it considered high enough to decrement temperature?
+
+    D_TEMP_UP = 0.0005              # temperature increment magnitude
+    D_TEMP_DOWN = 0.001              # temperature decrement magnitude
+    D_TEMP_MIN = 1.20
+    D_TEMP_MAX = 0.15                # temperature maximum offset
 
     # ========================
     # Device
