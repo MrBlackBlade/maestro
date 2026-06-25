@@ -245,10 +245,10 @@ class ChrolloHandler(GeneralModelHandler):
         self.current_entropy = entropy
 
         if len(self.delta_entropy_list) == 100:
-            if entropy < Config.ENTROPY_LOW:
+            if avg_delta_entropy < Config.ENTROPY_LOW:
                 # Model is overly confident / looping. Build pressure over time.
                 self.dynamic_temperature += Config.D_TEMP_UP
-            if entropy > Config.ENTROPY_HIGH:
+            if avg_delta_entropy > Config.ENTROPY_HIGH:
                 # Model is being creative. Release the pressure.
                 self.dynamic_temperature = max(0.0, self.dynamic_temperature - Config.D_TEMP_DOWN)
 
@@ -279,7 +279,7 @@ class ChrolloHandler(GeneralModelHandler):
 
         updated_tokens = torch.cat((current_tokens, next_token), dim=1)
         updated_moods = torch.cat((current_moods, next_mood), dim=1)
-        return updated_tokens, updated_moods, next_token, avg_delta_entropy, current_temp
+        return updated_tokens, updated_moods, next_token#, avg_delta_entropy, current_temp
 
 
 # ---------------------------------------------------------------------------
@@ -377,8 +377,8 @@ if __name__ == "__main__":
 
     # ── Generate ─────────────────────────────────────────────────────────
     elif args.command == "generate":
-        entropy_list = []
-        temp_list = []
+        # entropy_list = []
+        # temp_list = []
         chrollo_handler.load_checkpoint(epoch=args.epoch)
         chrollo.eval()
 
@@ -411,13 +411,13 @@ if __name__ == "__main__":
                         
                     while (audio_engine.audio_queue.qsize() > 1):
                         time.sleep(0.1)
-                    current_tokens, current_moods, next_token, entropy, current_temp = chrollo_handler.generate_single_step(
+                    current_tokens, current_moods, next_token = chrollo_handler.generate_single_step(
                         current_tokens, current_moods, target_mood_id,
                         generator_cache=generator_cache,
                         classifier_cache=classifier_cache,
                     )
-                    entropy_list.append(entropy)
-                    temp_list.append(current_temp)
+                    # entropy_list.append(entropy)
+                    # temp_list.append(current_temp)
                     audio_engine.push_token(next_token.item())
                     step += 1
                     pbar.update(1)
@@ -428,7 +428,7 @@ if __name__ == "__main__":
 
         generated_tokens = current_tokens.squeeze(0).cpu().tolist()
         save_midi(generated_tokens, tokenizer, args.output)
-        import json
-        json.dump(entropy_list, open("entropy.json", "w"), indent=4)
-        json.dump(temp_list, open("temperature.json", "w"), indent=4)
+        # import json
+        # json.dump(entropy_list, open("entropy.json", "w"), indent=4)
+        # json.dump(temp_list, open("temperature.json", "w"), indent=4)
         print(f"Saved {len(generated_tokens)} tokens to {args.output}")
