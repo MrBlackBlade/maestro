@@ -106,7 +106,7 @@ class MoodClassifier(nn.Module):
         return logits
 
 class MoodClassifierHandler(GeneralModelHandler):
-    MODEL_NAME = "classifier_0"
+    MODEL_NAME = "classifier_2"
 
     def __init__(self, model: nn.Module, optimizer, criterion, scheduler):
         super().__init__(model, optimizer, scheduler, self.MODEL_NAME)

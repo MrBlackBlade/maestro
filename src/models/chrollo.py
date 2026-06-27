@@ -302,8 +302,8 @@ if __name__ == "__main__":
     gen = sub.add_parser("generate")
     gen.add_argument("--epoch", type=int, default=None,
                       help="Checkpoint epoch to load (default: best)")
-    gen.add_argument("--mood", type=str, default="romantic", choices=Config.MOODS)
-    gen.add_argument("--transition-mood", type=str, default="magnificent", choices=Config.MOODS,
+    gen.add_argument("--mood", type=str, default="fear", choices=Config.MOODS)
+    gen.add_argument("--transition-mood", type=str, default="angry", choices=Config.MOODS,
                       help="Mood to transition to during generation")
     gen.add_argument("--transition-step", type=int, default=1024,
                       help="Step at which to transition the mood")
@@ -357,11 +357,6 @@ if __name__ == "__main__":
     # ── Train ────────────────────────────────────────────────────────────
     if args.command == "train":
         start_epoch = 1
-        if args.resume_epoch is not None:
-            chrollo_handler.load_checkpoint(epoch=args.resume_epoch)
-            start_epoch = args.resume_epoch + 1
-            print(f"Resumed from epoch {args.resume_epoch}, continuing at epoch {start_epoch}")
-
         dataloader = get_mood_cached_dataloader(
             batch_size=args.batch_size,
             num_workers=Config.NUM_WORKERS,
@@ -371,8 +366,16 @@ if __name__ == "__main__":
         print(f"Batches per epoch: {len(dataloader)}")
         print(f"Using {Config.NUM_WORKERS} parallel workers for data loading")
         if args.target == "generator":
+            if args.resume_epoch is not None:
+                chrollo_handler.load_checkpoint(epoch=args.resume_epoch)
+                start_epoch = args.resume_epoch + 1
+                print(f"Resumed from epoch {args.resume_epoch}, continuing at epoch {start_epoch}")
             chrollo_handler.train(dataloader=dataloader, epochs=args.epochs, start_epoch=start_epoch)
         elif args.target == "classifier":
+            if args.resume_epoch is not None:
+                mood_classifier_handler.load_checkpoint(epoch=args.resume_epoch)
+                start_epoch = args.resume_epoch + 1
+                print(f"Resumed from epoch {args.resume_epoch}, continuing at epoch {start_epoch}")
             mood_classifier_handler.train(dataloader=dataloader, epochs=args.epochs, start_epoch=start_epoch)
 
     # ── Generate ─────────────────────────────────────────────────────────
