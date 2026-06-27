@@ -85,6 +85,7 @@ class NegCFGGeneratorHandler(GeneralModelHandler):
     def __init__(self, model: nn.Module, optimizer, criterion, scheduler):
         super().__init__(model, optimizer, scheduler, self.MODEL_NAME)
         self.criterion = criterion
+        self.prob_dict = {}
 
     # ── Training ─────────────────────────────────────────────────────────
 
@@ -192,6 +193,13 @@ class NegCFGGeneratorHandler(GeneralModelHandler):
         mood_probs = F.softmax(
             self.model.mood_classifier(last_hidden[target_branch]), dim=-1,
         )  # [NUM_MOODS]
+
+        # Accumulate each mood's probability at this generation step
+        for mood_id in range(Config.NUM_MOODS):
+            mood_key = str(mood_id)
+            if mood_key not in self.prob_dict:
+                self.prob_dict[mood_key] = []
+            self.prob_dict[mood_key].append(mood_probs[mood_id].item())
 
         target_prob = mood_probs[target_mood_id]
         penalty_mask = mood_probs > target_prob
@@ -316,6 +324,7 @@ if __name__ == "__main__":
 
     # ── Generate ─────────────────────────────────────────────────────────
     elif args.command == "generate":
+        handler.prob_dict = {}
         handler.load_checkpoint(epoch=args.epoch)
         model.eval()
 
@@ -367,8 +376,8 @@ if __name__ == "__main__":
         finally:
             audio_engine.push_token(4, stop=True)
             audio_engine.playback_done.wait()
-
-
-        generated_tokens = current_tokens.squeeze(0).cpu().tolist()
-        save_midi(generated_tokens, tokenizer, args.output)
-        print(f"Saved {len(generated_tokens)} tokens to {args.output}")
+            generated_tokens = current_tokens.squeeze(0).cpu().tolist()
+            save_midi(generated_tokens, tokenizer, args.output)
+            import json
+            json.dump(handler.prob_dict, open("prob.json", "w"), indent=4)
+            print(f"Saved {len(generated_tokens)} tokens to {args.output}")
