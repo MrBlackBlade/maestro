@@ -1,4 +1,6 @@
 # Optional dependencies for the inference WebSocket server and test client.
 fastapi
-uvicorn
+uvicorn[standard]
 websockets
+heartpy
+sounddevice

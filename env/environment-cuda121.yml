@@ -20,6 +20,11 @@ dependencies:
       - symusic>=0.5.0
       - miditok
       - midi2audio
+      - heartpy
+      - sounddevice
+      - fastapi
+      - uvicorn[standard]
+      - websockets
       - --index-url https://download.pytorch.org/whl/cu121
       - torch
       - torchvision

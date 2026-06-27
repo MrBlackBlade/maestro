@@ -286,6 +286,152 @@ class MoodMusicSession(InferenceSession):
 
 
 # ---------------------------------------------------------------------------
+# Direct Music Session (Manual Mood — no physiological inference)
+# ---------------------------------------------------------------------------
+class DirectMusicSession:
+    """Generates MIDI tokens for a user-supplied mood with no physio inference."""
+
+    def __init__(self, ws: WebSocket, initial_mood: str = "happy") -> None:
+        self.ws = ws
+        self.active = True
+        self.client_queue_size = 0
+        self.task = None
+        mood_id = Config.MOOD_TO_ID.get(initial_mood, 4)  # default: happy
+        self.target_mood_id = mood_id
+
+    def set_mood(self, mood_name: str) -> dict[str, Any]:
+        if mood_name not in Config.MOOD_TO_ID:
+            raise ValueError(f"Unknown mood '{mood_name}'. Valid moods: {Config.MOODS}")
+        self.target_mood_id = Config.MOOD_TO_ID[mood_name]
+        return _ok({"event": "mood_set", "mood": mood_name, "mood_id": self.target_mood_id})
+
+    async def start_generator(self):
+        self.task = asyncio.create_task(self.generation_loop())
+
+    def stop(self):
+        self.active = False
+        if self.task:
+            self.task.cancel()
+
+    async def generation_loop(self):
+        """Background task generating MIDI tokens for the current manually-set mood."""
+        device = Config.DEVICE
+        num_branches = Config.NUM_MOODS + 1
+
+        if Config.USE_KV_CACHE:
+            from src.models.cached_transformer import KVCache
+            generator_cache = KVCache.from_model(_chrollo, batch_size=num_branches)
+            classifier_cache = KVCache.from_model(_mood_classifier)
+        else:
+            generator_cache = None
+            classifier_cache = None
+
+        current_tokens = torch.tensor([[1]], device=device)
+        current_moods = torch.tensor([[self.target_mood_id]], device=device)
+
+        # Send start token
+        await _send_json(self.ws, _ok({
+            "event": "music_token",
+            "token": 1,
+            "mood_id": self.target_mood_id,
+        }))
+
+        while self.active:
+            if self.client_queue_size > 1:
+                await asyncio.sleep(0.1)
+                continue
+            try:
+                current_tokens, current_moods, next_token = await asyncio.to_thread(
+                    _chrollo_handler.generate_single_step,
+                    current_tokens,
+                    current_moods,
+                    self.target_mood_id,
+                    generator_cache=generator_cache,
+                    classifier_cache=classifier_cache,
+                )
+                token_val = next_token.item()
+                await _send_json(self.ws, _ok({
+                    "event": "music_token",
+                    "token": token_val,
+                    "mood_id": self.target_mood_id,
+                }))
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"DirectMusicSession generation error: {e}")
+                break
+
+
+# ---------------------------------------------------------------------------
+# Direct Music Route  (/ws/direct_music)
+# ---------------------------------------------------------------------------
+@app.websocket("/ws/direct_music")
+async def direct_music_ws(ws: WebSocket) -> None:
+    """
+    Manual mood → music endpoint.  No physiological inference.
+
+    Client messages:
+        { "type": "set_mood",      "mood": "<mood_name>" }
+        { "type": "queue_status",  "qsize": <int> }
+        { "type": "ping" }
+
+    Server messages:
+        { "type": "ok", "event": "connected",  "moods": [...] }
+        { "type": "ok", "event": "mood_set",   "mood": "...", "mood_id": int }
+        { "type": "ok", "event": "music_token","token": int, "mood_id": int }
+        { "type": "ok", "event": "pong" }
+        { "type": "error", "message": "..." }
+    """
+    await ws.accept()
+
+    # Parse optional ?mood=<name> query parameter for initial mood
+    initial_mood = ws.query_params.get("mood", "happy")
+    if initial_mood not in Config.MOOD_TO_ID:
+        initial_mood = "happy"
+
+    session = DirectMusicSession(ws, initial_mood=initial_mood)
+    await session.start_generator()
+
+    await _send_json(ws, _ok({
+        "event": "connected",
+        "message": f"Direct Music endpoint ready. Current mood: {initial_mood}",
+        "mood": initial_mood,
+        "mood_id": session.target_mood_id,
+        "moods": Config.MOODS,
+    }))
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                await _send_json(ws, _error_message(exc))
+                continue
+
+            msg_type = msg.get("type")
+
+            if msg_type == "set_mood":
+                try:
+                    response = session.set_mood(msg.get("mood", ""))
+                    await _send_json(ws, response)
+                except ValueError as exc:
+                    await _send_json(ws, _error_message(exc))
+
+            elif msg_type == "queue_status":
+                session.client_queue_size = msg.get("qsize", 0)
+
+            elif msg_type == "ping":
+                await _send_json(ws, _ok({"event": "pong"}))
+
+    except WebSocketDisconnect:
+        logger.info("Client disconnected from direct_music")
+    finally:
+        session.stop()
+
+
+# ---------------------------------------------------------------------------
 # Original Inference Route
 # ---------------------------------------------------------------------------
 @app.websocket("/ws/inference")
