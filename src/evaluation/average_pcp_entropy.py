@@ -22,9 +22,9 @@ MODEL_REGISTRY = {
     ChrolloHandler.MODEL_NAME: (Chrollo, ChrolloHandler),
 }
 
-def compute_harmonic_consistency(midi_path: str, window_size_sec: float = 2.0, fs: int = 10) -> float:
+def compute_average_pcp_entropy(midi_path: str, window_size_sec: float = 2.0, fs: int = 10) -> float:
     """
-    Compute harmonic consistency using Windowed Pitch Class Profile (PCP) Entropy.
+    Compute average pitch-class profile entropy .
     Lower entropy means clearer, more consistent chords/scales.
     
     Args:
@@ -205,10 +205,10 @@ def generate_and_evaluate_model(
     save_midi(generated_tokens, tokenizer, str(temp_midi))
     print(f"Saved generated sample to {temp_midi}")
     
-    return compute_harmonic_consistency(str(temp_midi))
+    return compute_average_pcp_entropy(str(temp_midi))
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Compute Harmonic Consistency (Windowed PCP Entropy)")
+    parser = argparse.ArgumentParser(description="Compute Average pitch-class profile entropy (Windowed PCP Entropy)")
     parser.add_argument("--model-name", type=str, choices=list(MODEL_REGISTRY.keys()),
                         help="Generate a new file using this model, then evaluate.")
     parser.add_argument("--epoch", type=int, default=None,
@@ -225,7 +225,7 @@ if __name__ == "__main__":
 
     if args.model_name:
         Config.MIDI_DIR.mkdir(parents=True, exist_ok=True)
-        print(f"--- HARMONIC CONSISTENCY EVALUATION for model {args.model_name} ---")
+        print(f"--- AVERAGE PITCH-CLASS PROFILE ENTROPY EVALUATION for model {args.model_name} ---")
         entropy = generate_and_evaluate_model(
             args.model_name, args.epoch, args.length, args.mood,
             transition_mood=args.transition_mood, transition_step=args.transition_step
@@ -239,7 +239,7 @@ if __name__ == "__main__":
             print(f"No MIDI files found in {Config.MIDI_DIR}.")
             exit(0)
 
-        print("--- HARMONIC CONSISTENCY EVALUATION ---")
+        print("--- AVERAGE PITCH-CLASS PROFILE ENTROPY EVALUATION ---")
         print("Available MIDI files:")
         for i, midi_file in enumerate(midi_files):
             print(f"\t{i+1}: {midi_file}")
@@ -255,10 +255,10 @@ if __name__ == "__main__":
             
         file_path = str(Config.MIDI_DIR / midi_files[file_idx])
         print(f"Evaluating {file_path}...")
-        entropy = compute_harmonic_consistency(file_path)
+        entropy = compute_average_pcp_entropy(file_path)
 
     print("\n" + "="*45)
-    print("HARMONIC CONSISTENCY RESULTS")
+    print("AVERAGE PITCH-CLASS PROFILE ENTROPY RESULTS")
     print("="*45)
     print(f"Average PCP Entropy: {entropy:.4f} bits")
     print(f"(Scale: 0.0 is perfect consistency, ~3.58 is complete randomness)")
