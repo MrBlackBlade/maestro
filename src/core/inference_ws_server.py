@@ -258,7 +258,21 @@ class MoodMusicSession(InferenceSession):
                 continue
 
             try:
-                # Run the model iteration thread-safely to not block the FastAPI loop
+                # ── ADD THIS SLIDING WINDOW BLOCK HERE ──
+                # If the context is approaching the maximum sequence length,
+                # slice the history down so it never triggers the buggy .is_full() refill logic.
+                if current_tokens.size(1) >= (Config.MAX_SEQ_LEN - 5):
+                    # Keep only the last half of the tokens as context
+                    keep_len = Config.MAX_SEQ_LEN // 2
+                    current_tokens = current_tokens[:, -keep_len:]
+                    current_moods = current_moods[:, -keep_len:]
+                    
+                    # Manually clear and prime the KV caches cleanly if they exist
+                    if generator_cache is not None and classifier_cache is not None:
+                        generator_cache.reset()
+                        classifier_cache.reset()
+
+                # Run the model iteration thread-safely
                 current_tokens, current_moods, next_token = await asyncio.to_thread(
                     _chrollo_handler.generate_single_step,
                     current_tokens, 
