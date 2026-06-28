@@ -103,6 +103,7 @@ def generate_and_evaluate_model(model_name: str, epoch: int | None = None, lengt
             )
             
     elif model_name == NegCFGGeneratorHandler.MODEL_NAME:
+        num_branches = Config.NUM_MOODS + 1
         if Config.USE_KV_CACHE:
             cache = KVCache.from_model(model, batch_size=num_branches)
         else:
@@ -115,16 +116,15 @@ def generate_and_evaluate_model(model_name: str, epoch: int | None = None, lengt
             )
     
     elif model_name == ChrolloHandler.MODEL_NAME:
+        num_branches = Config.NUM_MOODS + 1
         if Config.USE_KV_CACHE:
-            cond_cache = KVCache.from_model(model)
-            uncond_cache = KVCache.from_model(model)
+            cache = KVCache.from_model(model, batch_size=num_branches)
         else:
-            cond_cache = uncond_cache = None
+            cache = None
             
         for step in tqdm(range(length), desc=f"Generating {length} tokens from {model_name}"):
             current_tokens, current_moods, next_token = handler.generate_single_step(
-                current_tokens, current_moods, target_mood_id,
-                cond_cache=cond_cache, uncond_cache=uncond_cache,
+                current_tokens, current_moods, target_mood_id, generator_cache=cache
             )
             
     generated_tokens = current_tokens.squeeze(0).cpu().tolist()
