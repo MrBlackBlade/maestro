@@ -12,7 +12,18 @@ dependencies:
   - pandas
   - scikit-learn
   - tensorflow
+  - tqdm
+  - streamlit
+  - scipy
   - pip:
+      - symusic>=0.5.0
+      - miditok
+      - midi2audio
+      - heartpy
+      - sounddevice
+      - fastapi
+      - uvicorn[standard]
+      - websockets
       - torch
       - torchvision
       - torchaudio

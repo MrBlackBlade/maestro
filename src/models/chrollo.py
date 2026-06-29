@@ -86,6 +86,8 @@ class ChrolloHandler(GeneralModelHandler):
         self.dynamic_temperature = 0
         self.current_entropy = 0
         self.delta_entropy_list = []
+        self.prob_dict = {}
+        self.ema_mood_probs = None      # EMA state for classifier smoothing
 
     # ── Training ─────────────────────────────────────────────────────────
 
@@ -143,7 +145,6 @@ class ChrolloHandler(GeneralModelHandler):
         temperature: float = Config.D_TEMP_MIN,
         top_p: float = 0.95,
         generator_cache: KVCache | None = None,
-        classifier_cache: KVCache | None = None,
     ):
         """One autoregressive step with negative classifier-free guidance.
 
@@ -154,16 +155,12 @@ class ChrolloHandler(GeneralModelHandler):
         Returns ``(updated_tokens, updated_moods, next_token)``.
         """
         num_branches = Config.NUM_MOODS + 1
-        use_cache = Config.USE_KV_CACHE and (
-            generator_cache is not None
-            and classifier_cache is not None
-        )
+        use_cache = Config.USE_KV_CACHE and generator_cache is not None
 
         if use_cache:
             if generator_cache.is_full():
                 # ── CRITICAL: Synchronize resets! ──
                 generator_cache.reset()
-                classifier_cache.reset() 
 
                 refill_len = min(current_tokens.size(1), Config.MAX_SEQ_LEN // 2)
                 
@@ -186,7 +183,6 @@ class ChrolloHandler(GeneralModelHandler):
                 ctx, mood_batch,
                 kv_cache=generator_cache, start_pos=start_pos
             )
-            
         else:
             ctx_len = min(current_tokens.size(1), Config.SEQ_LEN)
             
@@ -202,17 +198,35 @@ class ChrolloHandler(GeneralModelHandler):
         # Last-position logits and hidden states for every branch
         last_logits = logits[:, -1, :]     # [num_branches, V]
 
-        # ── Classifier → penalty selection ───────────────────────────────
+        # ── Classifier → sliding-window inference (Fix 2) ─────────────────
+        # Always feed the last CLASSIFIER_WINDOW tokens without a KV cache so
+        # the classifier has a consistent, adequate context every step.
+        # This avoids the 1-token incremental degenerate case.
         target_branch = target_mood_id + 1
-        _, mood_probs = self.classifier_handler.inference(
-            tokens=classifier_ctx,
-            kv_cache=classifier_cache,
-            start_pos=start_pos
-        )
-        
-        # Since the handler returns shape [B, NUM_MOODS] and our batch size is 1,
-        # we squeeze it to get a clean 1D tensor: [NUM_MOODS]
-        mood_probs = mood_probs.squeeze(0)
+        window = min(current_tokens.size(1), Config.CLASSIFIER_WINDOW)
+        classifier_ctx = current_tokens[:, -window:].to(self.device)
+        _, raw_mood_probs = self.classifier_handler.inference(tokens=classifier_ctx)  # no cache
+        raw_mood_probs = raw_mood_probs.squeeze(0)  # [NUM_MOODS]
+
+        # ── EMA smoothing (Fix 3) ─────────────────────────────────────────
+        # Blend raw probabilities with the running EMA so that CFG penalty
+        # decisions are based on a stable, smoothed signal rather than
+        # per-step noise from the shallow classifier.
+        if self.ema_mood_probs is None:
+            self.ema_mood_probs = raw_mood_probs
+        else:
+            self.ema_mood_probs = (
+                Config.CLASSIFIER_EMA_ALPHA * raw_mood_probs
+                + (1.0 - Config.CLASSIFIER_EMA_ALPHA) * self.ema_mood_probs
+            )
+        mood_probs = self.ema_mood_probs
+
+        # Accumulate each mood's probability at this generation step
+        for mood_id in range(Config.NUM_MOODS):
+            mood_key = str(mood_id)
+            if mood_key not in self.prob_dict:
+                self.prob_dict[mood_key] = []
+            self.prob_dict[mood_key].append(mood_probs[mood_id].item())
 
         target_prob = mood_probs[target_mood_id]
         penalty_mask = mood_probs > target_prob
@@ -279,7 +293,7 @@ class ChrolloHandler(GeneralModelHandler):
 
         updated_tokens = torch.cat((current_tokens, next_token), dim=1)
         updated_moods = torch.cat((current_moods, next_mood), dim=1)
-        return updated_tokens, updated_moods, next_token#, avg_delta_entropy, current_temp
+        return updated_tokens, updated_moods, next_token  #, avg_delta_entropy, current_temp
 
 
 # ---------------------------------------------------------------------------
@@ -302,8 +316,8 @@ if __name__ == "__main__":
     gen = sub.add_parser("generate")
     gen.add_argument("--epoch", type=int, default=None,
                       help="Checkpoint epoch to load (default: best)")
-    gen.add_argument("--mood", type=str, default="romantic", choices=Config.MOODS)
-    gen.add_argument("--transition-mood", type=str, default="magnificent", choices=Config.MOODS,
+    gen.add_argument("--mood", type=str, default="fear", choices=Config.MOODS)
+    gen.add_argument("--transition-mood", type=str, default="angry", choices=Config.MOODS,
                       help="Mood to transition to during generation")
     gen.add_argument("--transition-step", type=int, default=1024,
                       help="Step at which to transition the mood")
@@ -357,11 +371,6 @@ if __name__ == "__main__":
     # ── Train ────────────────────────────────────────────────────────────
     if args.command == "train":
         start_epoch = 1
-        if args.resume_epoch is not None:
-            chrollo_handler.load_checkpoint(epoch=args.resume_epoch)
-            start_epoch = args.resume_epoch + 1
-            print(f"Resumed from epoch {args.resume_epoch}, continuing at epoch {start_epoch}")
-
         dataloader = get_mood_cached_dataloader(
             batch_size=args.batch_size,
             num_workers=Config.NUM_WORKERS,
@@ -371,24 +380,32 @@ if __name__ == "__main__":
         print(f"Batches per epoch: {len(dataloader)}")
         print(f"Using {Config.NUM_WORKERS} parallel workers for data loading")
         if args.target == "generator":
+            if args.resume_epoch is not None:
+                chrollo_handler.load_checkpoint(epoch=args.resume_epoch)
+                start_epoch = args.resume_epoch + 1
+                print(f"Resumed from epoch {args.resume_epoch}, continuing at epoch {start_epoch}")
             chrollo_handler.train(dataloader=dataloader, epochs=args.epochs, start_epoch=start_epoch)
         elif args.target == "classifier":
+            if args.resume_epoch is not None:
+                mood_classifier_handler.load_checkpoint(epoch=args.resume_epoch)
+                start_epoch = args.resume_epoch + 1
+                print(f"Resumed from epoch {args.resume_epoch}, continuing at epoch {start_epoch}")
             mood_classifier_handler.train(dataloader=dataloader, epochs=args.epochs, start_epoch=start_epoch)
 
     # ── Generate ─────────────────────────────────────────────────────────
     elif args.command == "generate":
         # entropy_list = []
         # temp_list = []
+        chrollo_handler.prob_dict = {}
+        chrollo_handler.ema_mood_probs = None
         chrollo_handler.load_checkpoint(epoch=args.epoch)
         chrollo.eval()
 
         num_branches = Config.NUM_MOODS + 1
         if Config.USE_KV_CACHE:
             generator_cache = KVCache.from_model(chrollo, batch_size=num_branches)
-            classifier_cache = KVCache.from_model(mood_classifier)
         else:
             generator_cache = None
-            classifier_cache = None
         
         try: 
             audio_engine = AudioEngine()
@@ -414,7 +431,6 @@ if __name__ == "__main__":
                     current_tokens, current_moods, next_token = chrollo_handler.generate_single_step(
                         current_tokens, current_moods, target_mood_id,
                         generator_cache=generator_cache,
-                        classifier_cache=classifier_cache,
                     )
                     # entropy_list.append(entropy)
                     # temp_list.append(current_temp)
@@ -426,9 +442,10 @@ if __name__ == "__main__":
             audio_engine.playback_done.wait()
             generated_tokens = current_tokens.squeeze(0).cpu().tolist()
             save_midi(generated_tokens, tokenizer, args.output)
-            # import json
+            import json
             # json.dump(entropy_list, open("entropy.json", "w"), indent=4)
             # json.dump(temp_list, open("temperature.json", "w"), indent=4)
+            json.dump(chrollo_handler.prob_dict, open("prob.json", "w"), indent=4)
             print(f"Saved {len(generated_tokens)} tokens to {args.output}")
             
 

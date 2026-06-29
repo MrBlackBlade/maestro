@@ -7,12 +7,15 @@ from tqdm import tqdm
 from src.core.config import Config
 from src.core.utils import get_tokenizer
 from src.dataloaders.mood_dataset_cached import get_mood_cached_dataloader
+from src.models.chrollo import Chrollo, ChrolloHandler
+from src.models.mood_classifier import MoodClassifier, MoodClassifierHandler
 from src.models.neg_cfg_generator import NegCFGGenerator, NegCFGGeneratorHandler
 from src.models.mood_generator import MoodModelGenerator, MoodModelGeneratorHandler
 
 MODEL_REGISTRY = {
     MoodModelGeneratorHandler.MODEL_NAME: (MoodModelGenerator, MoodModelGeneratorHandler),
     NegCFGGeneratorHandler.MODEL_NAME: (NegCFGGenerator, NegCFGGeneratorHandler),
+    ChrolloHandler.MODEL_NAME: (Chrollo, ChrolloHandler),
 }
 
 def evaluate_perplexity(args):
@@ -39,9 +42,28 @@ def evaluate_perplexity(args):
     # Using sum so we can compute exact per-token loss averaging
     criterion = nn.CrossEntropyLoss(ignore_index=0, reduction='sum')
     
-    handler = HandlerClass(
-        model=model, optimizer=optimizer, scheduler=scheduler, criterion=criterion
-    )
+    # Initialize handler
+    if ModelClass == Chrollo:
+        mood_classifier = MoodClassifier(vocab_size=vocab_size).to(device)
+        mood_classifier_optimizer = torch.optim.AdamW(
+            mood_classifier.parameters(), lr=Config.LEARNING_RATE, weight_decay=Config.WEIGHT_DECAY,
+        )
+        mood_classifier_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            mood_classifier_optimizer,
+            T_max=1,
+            eta_min=1e-6,
+        )
+        mood_classifier_criterion = nn.CrossEntropyLoss()
+        mood_classifier_handler = MoodClassifierHandler(
+            model=mood_classifier, optimizer=mood_classifier_optimizer, scheduler=mood_classifier_scheduler, criterion=mood_classifier_criterion,
+        )
+        
+        handler = HandlerClass(
+            model=model, optimizer=optimizer, scheduler=scheduler, 
+            criterion=criterion, classifier_handler=mood_classifier_handler
+        )
+    else:
+        handler = HandlerClass(model=model, optimizer=optimizer, scheduler=scheduler, criterion=criterion)
     
     # Load checkpoint
     handler.load_checkpoint(epoch=args.epoch)

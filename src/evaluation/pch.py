@@ -9,6 +9,8 @@ from pathlib import Path
 
 from src.core.config import Config
 from src.core.utils import get_tokenizer, save_midi
+from src.models.chrollo import Chrollo, ChrolloHandler
+from src.models.mood_classifier import MoodClassifier, MoodClassifierHandler
 from src.models.mood_generator import MoodModelGenerator, MoodModelGeneratorHandler
 from src.models.neg_cfg_generator import NegCFGGenerator, NegCFGGeneratorHandler
 from src.models.cached_transformer import KVCache
@@ -16,6 +18,7 @@ from src.models.cached_transformer import KVCache
 MODEL_REGISTRY = {
     MoodModelGeneratorHandler.MODEL_NAME: (MoodModelGenerator, MoodModelGeneratorHandler),
     NegCFGGeneratorHandler.MODEL_NAME: (NegCFGGenerator, NegCFGGeneratorHandler),
+    ChrolloHandler.MODEL_NAME: (Chrollo, ChrolloHandler),
 }
 
 def compute_pitch_class_histogram(midi_path: str) -> np.ndarray:
@@ -50,9 +53,35 @@ def generate_and_evaluate_model(model_name: str, epoch: int | None = None, lengt
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1)
     criterion = nn.CrossEntropyLoss(ignore_index=0)
     
-    handler = HandlerClass(
-        model=model, optimizer=optimizer, scheduler=scheduler, criterion=criterion
-    )
+    # Initialize handler based on model type
+    if model_name == ChrolloHandler.MODEL_NAME:
+        # For Chrollo, we also need to initialize a mood classifier and its handler
+        mood_classifier = MoodClassifier(vocab_size=vocab_size).to(device)
+        mood_classifier_optimizer = torch.optim.AdamW(
+            mood_classifier.parameters(), lr=Config.LEARNING_RATE, weight_decay=Config.WEIGHT_DECAY
+        )
+        mood_classifier_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            mood_classifier_optimizer,
+            T_max=1,
+            eta_min=1e-6,
+        )
+        mood_classifier_criterion = nn.CrossEntropyLoss()
+        mood_classifier_handler = MoodClassifierHandler(
+            model=mood_classifier, 
+            optimizer=mood_classifier_optimizer, 
+            scheduler=mood_classifier_scheduler, 
+            criterion=mood_classifier_criterion
+        )
+        
+        handler = HandlerClass(
+            model=model, optimizer=optimizer, scheduler=scheduler, 
+            criterion=criterion, classifier_handler=mood_classifier_handler
+        )
+    else:
+        handler = HandlerClass(
+            model=model, optimizer=optimizer, scheduler=scheduler, criterion=criterion
+        )
+        
     handler.load_checkpoint(epoch=epoch)
     model.eval()
     
@@ -84,6 +113,18 @@ def generate_and_evaluate_model(model_name: str, epoch: int | None = None, lengt
             current_tokens, current_moods, next_token = handler.generate_single_step(
                 current_tokens, current_moods, target_mood_id,
                 cache=cache,
+            )
+    
+    elif model_name == ChrolloHandler.MODEL_NAME:
+        num_branches = Config.NUM_MOODS + 1
+        if Config.USE_KV_CACHE:
+            cache = KVCache.from_model(model, batch_size=num_branches)
+        else:
+            cache = None
+            
+        for step in tqdm(range(length), desc=f"Generating {length} tokens from {model_name}"):
+            current_tokens, current_moods, next_token = handler.generate_single_step(
+                current_tokens, current_moods, target_mood_id, generator_cache=cache
             )
             
     generated_tokens = current_tokens.squeeze(0).cpu().tolist()

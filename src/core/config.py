@@ -92,12 +92,13 @@ class Config:
     NOISE_LEVEL = 0.20               # Fraction of tokens to corrupt during refiner training
 
     # ========================
-    # Mood Classifier (NegCFGGenerator)
+    # Mood Classifier
     # ========================
-    CLASSIFIER_NUM_LAYERS = 1        # Number of layers in the mood classifier
+    CLASSIFIER_NUM_LAYERS = 4        # Number of layers in the mood classifier
+    CLASSIFIER_WARMUP = 64           # Skip loss for first N positions (too little context to classify mood)
     MOOD_LOSS_WEIGHT = 0.1           # Weight of mood classifier CE relative to token CE
     MOOD_CLASSIFIER_DETACH = False   # If True, stop classifier gradients from flowing into transformer
-    NEG_CFG_SCALE = 1.0              # Base negative guidance scale for penalty moods
+    NEG_CFG_SCALE = 2.0              # Base negative guidance scale for penalty moods
     POS_CFG_SCALE = 2.0              # Positive guidance scale for target mood
 
     # ========================
@@ -108,6 +109,8 @@ class Config:
     TOP_P = 0.95                     # Nucleus sampling threshold
     GENERATE_LENGTH = 256            # Default number of tokens to generate
     USE_KV_CACHE = True              # KV caching for faster autoregressive generation
+    CLASSIFIER_WINDOW = 128          # Sliding window size fed to the decoupled classifier at inference
+    CLASSIFIER_EMA_ALPHA = 0.05      # EMA smoothing factor for classifier mood_probs (lower = smoother)
 
     # Dynamic Temperature / Entropy
     # Entropy -> How chaotic is the model?

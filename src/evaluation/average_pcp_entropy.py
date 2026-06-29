@@ -12,16 +12,19 @@ from src.core.config import Config
 from src.core.utils import get_tokenizer, save_midi
 from src.models.mood_generator import MoodModelGenerator, MoodModelGeneratorHandler
 from src.models.neg_cfg_generator import NegCFGGenerator, NegCFGGeneratorHandler
+from src.models.mood_classifier import MoodClassifier, MoodClassifierHandler
+from src.models.chrollo import Chrollo, ChrolloHandler
 from src.models.cached_transformer import KVCache
 
 MODEL_REGISTRY = {
     MoodModelGeneratorHandler.MODEL_NAME: (MoodModelGenerator, MoodModelGeneratorHandler),
     NegCFGGeneratorHandler.MODEL_NAME: (NegCFGGenerator, NegCFGGeneratorHandler),
+    ChrolloHandler.MODEL_NAME: (Chrollo, ChrolloHandler),
 }
 
-def compute_harmonic_consistency(midi_path: str, window_size_sec: float = 2.0, fs: int = 10) -> float:
+def compute_average_pcp_entropy(midi_path: str, window_size_sec: float = 2.0, fs: int = 10) -> float:
     """
-    Compute harmonic consistency using Windowed Pitch Class Profile (PCP) Entropy.
+    Compute average pitch-class profile entropy .
     Lower entropy means clearer, more consistent chords/scales.
     
     Args:
@@ -107,9 +110,33 @@ def generate_and_evaluate_model(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1)
     criterion = nn.CrossEntropyLoss(ignore_index=0)
     
-    handler = HandlerClass(
-        model=model, optimizer=optimizer, scheduler=scheduler, criterion=criterion
-    )
+    if ModelClass == Chrollo:
+        # For Chrollo, we also need to initialize a mood classifier and its handler
+        mood_classifier = MoodClassifier(vocab_size=vocab_size).to(device)
+        mood_classifier_optimizer = torch.optim.AdamW(
+            mood_classifier.parameters(), lr=Config.LEARNING_RATE, weight_decay=Config.WEIGHT_DECAY
+        )
+        mood_classifier_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            mood_classifier_optimizer,
+            T_max=1,
+            eta_min=1e-6,
+        )
+        mood_classifier_criterion = nn.CrossEntropyLoss()
+        mood_classifier_handler = MoodClassifierHandler(
+            model=mood_classifier, 
+            optimizer=mood_classifier_optimizer, 
+            scheduler=mood_classifier_scheduler, 
+            criterion=mood_classifier_criterion
+        )
+        
+        handler = HandlerClass(
+            model=model, optimizer=optimizer, scheduler=scheduler, 
+            criterion=criterion, classifier_handler=mood_classifier_handler
+        )
+    else:
+        handler = HandlerClass(
+            model=model, optimizer=optimizer, scheduler=scheduler, criterion=criterion
+        )
     handler.load_checkpoint(epoch=epoch)
     model.eval()
     
@@ -155,16 +182,32 @@ def generate_and_evaluate_model(
                 current_tokens, current_moods, target_mood_id,
                 cache=cache,
             )
+    
+    elif model_name == ChrolloHandler.MODEL_NAME:
+        num_branches = Config.NUM_MOODS + 1
+        if Config.USE_KV_CACHE:
+            cache = KVCache.from_model(model, batch_size=num_branches)
+        else:
+            cache = None
+            
+        for step in tqdm(range(length), desc=f"Generating {length} tokens from {model_name}"):
+            if transition_mood_id is not None and step == transition_step:
+                target_mood_id = transition_mood_id
+                print(f"\n[Step {step}] Transitioning mood to {transition_mood}!")
+                
+            current_tokens, current_moods, next_token = handler.generate_single_step(
+                current_tokens, current_moods, target_mood_id, generator_cache=cache
+            )   
             
     generated_tokens = current_tokens.squeeze(0).cpu().tolist()
     temp_midi = Config.MIDI_DIR / f"temp_{model_name}_hc.mid"
     save_midi(generated_tokens, tokenizer, str(temp_midi))
     print(f"Saved generated sample to {temp_midi}")
     
-    return compute_harmonic_consistency(str(temp_midi))
+    return compute_average_pcp_entropy(str(temp_midi))
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Compute Harmonic Consistency (Windowed PCP Entropy)")
+    parser = argparse.ArgumentParser(description="Compute Average pitch-class profile entropy (Windowed PCP Entropy)")
     parser.add_argument("--model-name", type=str, choices=list(MODEL_REGISTRY.keys()),
                         help="Generate a new file using this model, then evaluate.")
     parser.add_argument("--epoch", type=int, default=None,
@@ -181,7 +224,7 @@ if __name__ == "__main__":
 
     if args.model_name:
         Config.MIDI_DIR.mkdir(parents=True, exist_ok=True)
-        print(f"--- HARMONIC CONSISTENCY EVALUATION for model {args.model_name} ---")
+        print(f"--- AVERAGE PITCH-CLASS PROFILE ENTROPY EVALUATION for model {args.model_name} ---")
         entropy = generate_and_evaluate_model(
             args.model_name, args.epoch, args.length, args.mood,
             transition_mood=args.transition_mood, transition_step=args.transition_step
@@ -195,7 +238,7 @@ if __name__ == "__main__":
             print(f"No MIDI files found in {Config.MIDI_DIR}.")
             exit(0)
 
-        print("--- HARMONIC CONSISTENCY EVALUATION ---")
+        print("--- AVERAGE PITCH-CLASS PROFILE ENTROPY EVALUATION ---")
         print("Available MIDI files:")
         for i, midi_file in enumerate(midi_files):
             print(f"\t{i+1}: {midi_file}")
@@ -211,10 +254,10 @@ if __name__ == "__main__":
             
         file_path = str(Config.MIDI_DIR / midi_files[file_idx])
         print(f"Evaluating {file_path}...")
-        entropy = compute_harmonic_consistency(file_path)
+        entropy = compute_average_pcp_entropy(file_path)
 
     print("\n" + "="*45)
-    print("HARMONIC CONSISTENCY RESULTS")
+    print("AVERAGE PITCH-CLASS PROFILE ENTROPY RESULTS")
     print("="*45)
     print(f"Average PCP Entropy: {entropy:.4f} bits")
     print(f"(Scale: 0.0 is perfect consistency, ~3.58 is complete randomness)")
