@@ -67,16 +67,45 @@
    ```
    
 
-# Running the Inference Server
+# Generating Music
+## a. Running the Inference Server (recommended)
 
-To run the inference WebSocket server:
+To run the inference WebSocket server, using our best model:
+
 
 ```bash
 $ uvicorn src.core.inference_ws_server:app --host 127.0.0.1 --port 8000
 ```
 
+## b. Generating music directly from the command line
+To generate tokens without the need to run the Inference server, you can call individual models with custom command-line arguments:
+
+```bash
+$ python -m src.models.model_name generate --command-1 argument-1 --command-2 argument-2
+```
+### Available Model Names (sorted by generative performance):
+1. [chrollo_0](/src/models/chrollo.py#L80)
+2. [generator_3](/src/models/neg_cfg_generator.py#83)
+3. [generator_2](/src/models/mood_generator.py#L151)
+4. [generator_1](/src/models/generator.py#L140) *(deprecated)*
+5. [minimal_generator_0](/src/models/minimal_generator.py#74) *(deprecated)*
+
+### Available Generator Commands:
+1. ***epoch:*** select a specific epoch number to use in inference  
+└── ***opts:*** `0 < epoch < Config.EPOCHS (if not explicitly trained for more epochs)`
+2. ***length:*** number of generated tokens in sequence  
+└── ***opts:*** `0 < length < inf`
+3. ***mood:*** select the target mood  
+└── ***opts:*** `["angry", "exciting", "fear", "funny", "happy", "lazy", "magnificent", "quiet", "romantic", "sad", "warm",]`
+4. ***transition-mood:*** select the mood to transition into  
+└── ***opts:*** `["angry", "exciting", "fear", "funny", "happy", "lazy", "magnificent", "quiet", "romantic", "sad", "warm",]`
+5. ***transition-step:*** one-based index of the step at which the mood shifts from first to second target (must be less than `--length`)  
+└── ***opts:*** `0 < transition-step < length`
+6. ***output:*** name of MIDI file where the tokens will be saved  
+└── ***opts:*** `valid filename`
+
 # Project Architecture
-## Data setup
+## a. Data setup
 
 Data Directory:
 

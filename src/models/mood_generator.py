@@ -308,10 +308,6 @@ if __name__ == "__main__":
     gen.add_argument("--epoch", type=int, default=None,
                       help="Checkpoint epoch to load (default: best)")
     gen.add_argument("--mood", type=str, default="magnificent", choices=Config.MOODS)
-    gen.add_argument("--valence", type=float, default=None,
-                      help="Continuous valence value to map into a mood")
-    gen.add_argument("--arousal", type=float, default=None,
-                      help="Continuous arousal value to map into a mood")
     gen.add_argument("--length", type=int, default=4096)
     gen.add_argument("--output", type=str, default="generated_midi.mid")
 
@@ -370,19 +366,8 @@ if __name__ == "__main__":
         else:
             cond_cache = uncond_cache = None
 
-        # Priority: if V/A are explicitly provided, map them to a mood here.
-        if args.valence is not None or args.arousal is not None:
-            if args.valence is None or args.arousal is None:
-                raise SystemExit("Both --valence and --arousal must be provided together.")
-            mapped = affect_to_mood_match(args.valence, args.arousal)
-            target_mood_id = mapped.mood_id
-            print(
-                f"Mapped V/A ({args.valence:.3f}, {args.arousal:.3f}) -> "
-                f"{mapped.mood_name} (id={target_mood_id})"
-            )
-        else:
-            target_mood_id = Config.MOOD_TO_ID[args.mood]
-            print(f"Using mood '{args.mood}' (id={target_mood_id})")
+        target_mood_id = Config.MOOD_TO_ID[args.mood]
+        print(f"Using mood '{args.mood}' (id={target_mood_id})")
         current_tokens = torch.tensor([[1]], device=device)
         current_moods = torch.tensor([[target_mood_id]], device=device)
 
