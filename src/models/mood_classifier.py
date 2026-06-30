@@ -106,7 +106,7 @@ class MoodClassifier(nn.Module):
         return logits
 
 class MoodClassifierHandler(GeneralModelHandler):
-    MODEL_NAME = "classifier_4"
+    MODEL_NAME = "classifier_2"
 
     def __init__(self, model: nn.Module, optimizer, criterion, scheduler):
         super().__init__(model, optimizer, scheduler, self.MODEL_NAME)
@@ -127,18 +127,12 @@ class MoodClassifierHandler(GeneralModelHandler):
 
         B, S, _ = logits.shape
 
-        # ── Position-warmup loss (Fix 1) ──────────────────────────────────
-        # Skip the first CLASSIFIER_WARMUP positions from the loss entirely.
-        # Early positions have seen too few tokens to carry mood signal; including
-        # them causes the model to learn a near-uniform "hedge" distribution as
-        # its global minimum. Only computing loss over positions with adequate
-        # context forces the classifier to learn genuine mood features.
-        W = min(Config.CLASSIFIER_WARMUP, S - 1)  # guard: must leave at least 1 position
-        mood_target = true_mood.unsqueeze(1).expand(B, S)   # [B, S]
-
+        # Enforce that every step of the song should be driving toward the true mood
+        mood_target = true_mood.unsqueeze(1).expand(B, S)
+        
         mood_loss = F.cross_entropy(
-            logits[:, W:, :].reshape(-1, Config.NUM_MOODS),
-            mood_target[:, W:].reshape(-1),
+            logits.reshape(-1, Config.NUM_MOODS),
+            mood_target.reshape(-1),
         )
 
         return mood_loss

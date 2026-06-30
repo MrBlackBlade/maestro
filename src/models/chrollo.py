@@ -145,6 +145,7 @@ class ChrolloHandler(GeneralModelHandler):
         temperature: float = Config.D_TEMP_MIN,
         top_p: float = 0.95,
         generator_cache: KVCache | None = None,
+        classifier_cache: KVCache | None = None,
     ):
         """One autoregressive step with negative classifier-free guidance.
 
@@ -155,12 +156,16 @@ class ChrolloHandler(GeneralModelHandler):
         Returns ``(updated_tokens, updated_moods, next_token)``.
         """
         num_branches = Config.NUM_MOODS + 1
-        use_cache = Config.USE_KV_CACHE and generator_cache is not None
+        use_cache = Config.USE_KV_CACHE and (
+            generator_cache is not None
+            and classifier_cache is not None
+        )
 
         if use_cache:
             if generator_cache.is_full():
                 # ── CRITICAL: Synchronize resets! ──
                 generator_cache.reset()
+                classifier_cache.reset()
 
                 refill_len = min(current_tokens.size(1), Config.MAX_SEQ_LEN // 2)
                 
@@ -198,15 +203,17 @@ class ChrolloHandler(GeneralModelHandler):
         # Last-position logits and hidden states for every branch
         last_logits = logits[:, -1, :]     # [num_branches, V]
 
-        # ── Classifier → sliding-window inference (Fix 2) ─────────────────
-        # Always feed the last CLASSIFIER_WINDOW tokens without a KV cache so
-        # the classifier has a consistent, adequate context every step.
-        # This avoids the 1-token incremental degenerate case.
+        # ── Classifier → penalty selection ───────────────────────────────
         target_branch = target_mood_id + 1
-        window = min(current_tokens.size(1), Config.CLASSIFIER_WINDOW)
-        classifier_ctx = current_tokens[:, -window:].to(self.device)
-        _, raw_mood_probs = self.classifier_handler.inference(tokens=classifier_ctx)  # no cache
-        raw_mood_probs = raw_mood_probs.squeeze(0)  # [NUM_MOODS]
+        _, raw_mood_probs = self.classifier_handler.inference(
+            tokens=classifier_ctx,
+            kv_cache=classifier_cache,
+            start_pos=start_pos
+        )
+        
+        # Since the handler returns shape [B, NUM_MOODS] and our batch size is 1,
+        # we squeeze it to get a clean 1D tensor: [NUM_MOODS]
+        raw_mood_probs = raw_mood_probs.squeeze(0)
 
         # ── EMA smoothing (Fix 3) ─────────────────────────────────────────
         # Blend raw probabilities with the running EMA so that CFG penalty
@@ -316,7 +323,7 @@ if __name__ == "__main__":
     gen = sub.add_parser("generate")
     gen.add_argument("--epoch", type=int, default=None,
                       help="Checkpoint epoch to load (default: best)")
-    gen.add_argument("--mood", type=str, default="fear", choices=Config.MOODS)
+    gen.add_argument("--mood", type=str, default="romantic", choices=Config.MOODS)
     gen.add_argument("--transition-mood", type=str, default="angry", choices=Config.MOODS,
                       help="Mood to transition to during generation")
     gen.add_argument("--transition-step", type=int, default=1024,
@@ -404,8 +411,10 @@ if __name__ == "__main__":
         num_branches = Config.NUM_MOODS + 1
         if Config.USE_KV_CACHE:
             generator_cache = KVCache.from_model(chrollo, batch_size=num_branches)
+            classifier_cache = KVCache.from_model(mood_classifier)
         else:
             generator_cache = None
+            classifier_cache = None
         
         try: 
             audio_engine = AudioEngine()
@@ -431,6 +440,7 @@ if __name__ == "__main__":
                     current_tokens, current_moods, next_token = chrollo_handler.generate_single_step(
                         current_tokens, current_moods, target_mood_id,
                         generator_cache=generator_cache,
+                        classifier_cache=classifier_cache,
                     )
                     # entropy_list.append(entropy)
                     # temp_list.append(current_temp)
