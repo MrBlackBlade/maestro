@@ -53,12 +53,26 @@
    $ conda env update -f path/to/file.yml --prune
    ```
 
-## Running the Inference Server
+## Software Requirements
+1. [**Chocolatey**](https://chocolatey.org/install) package manager  for installing **FluidSynth**:
+   ### Installing Chocolatey using PowerShell:
+      ```powershell
+      $ Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+      ```
+
+2. [**FluidSynth**](https://www.fluidsynth.org/wiki/Download) for using Soundfonts in *[AudioEngine](./src/core/audio_engine.py)*'s live audio generation.
+   ### Installing FluidSynth using Chocolatey:
+   ```bash
+   $ choco install fluidsynth
+   ```
+   
+
+# Running the Inference Server
 
 To run the inference WebSocket server:
 
 ```bash
-uvicorn src.core.inference_ws_server:app --host 127.0.0.1 --port 8000
+$ uvicorn src.core.inference_ws_server:app --host 127.0.0.1 --port 8000
 ```
 
 # Project Architecture
