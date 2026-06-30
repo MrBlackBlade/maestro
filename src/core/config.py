@@ -98,7 +98,7 @@ class Config:
     CLASSIFIER_WARMUP = 64           # Skip loss for first N positions (too little context to classify mood)
     MOOD_LOSS_WEIGHT = 0.1           # Weight of mood classifier CE relative to token CE
     MOOD_CLASSIFIER_DETACH = False   # If True, stop classifier gradients from flowing into transformer
-    NEG_CFG_SCALE = 2.0              # Base negative guidance scale for penalty moods
+    NEG_CFG_SCALE = 1.0              # Base negative guidance scale for penalty moods
     POS_CFG_SCALE = 2.0              # Positive guidance scale for target mood
 
     # ========================

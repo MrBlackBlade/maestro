@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
-
+import numpy as np
 from src.core.config import Config
 from src.core.affect_bridge import affect_to_mood_match
 from src.core.audio_engine import AudioEngine
@@ -85,6 +85,9 @@ class NegCFGGeneratorHandler(GeneralModelHandler):
     def __init__(self, model: nn.Module, optimizer, criterion, scheduler):
         super().__init__(model, optimizer, scheduler, self.MODEL_NAME)
         self.criterion = criterion
+        self.dynamic_temperature = 0
+        self.current_entropy = 0
+        self.delta_entropy_list = []
         self.prob_dict = {}
 
     # ── Training ─────────────────────────────────────────────────────────
@@ -219,8 +222,33 @@ class NegCFGGeneratorHandler(GeneralModelHandler):
             diffs = penalty_logits - uncond_logits.unsqueeze(0)        # [K, V]
             final_logits = final_logits - (scales.unsqueeze(1) * diffs).sum(0)
 
+        # ── Shannon-Entropy + Dynamic Temperature ────────────────────────
+        raw_probs = F.softmax(final_logits, dim=-1)
+        entropy = -(raw_probs * torch.log(raw_probs + 1e-9)).sum().item()
+        delta_entropy = np.abs(entropy - self.current_entropy)
+        if len(self.delta_entropy_list) < 100:
+            self.delta_entropy_list.append(delta_entropy)
+        else:
+            self.delta_entropy_list.pop(0)
+            self.delta_entropy_list.append(delta_entropy)
+        avg_delta_entropy = np.average(self.delta_entropy_list)
+        self.current_entropy = entropy
+
+        if len(self.delta_entropy_list) == 100:
+            if avg_delta_entropy < Config.ENTROPY_LOW:
+                # Model is overly confident / looping. Build pressure over time.
+                self.dynamic_temperature += Config.D_TEMP_UP
+            if avg_delta_entropy > Config.ENTROPY_HIGH:
+                # Model is being creative. Release the pressure.
+                self.dynamic_temperature = max(0.0, self.dynamic_temperature - Config.D_TEMP_DOWN)
+
+            # Cap the maximum pressure so it doesn't devolve into pure noise
+            self.dynamic_temperature = min(self.dynamic_temperature, Config.D_TEMP_MAX)
+
+        current_temp = temperature + self.dynamic_temperature
+
         # ── Temperature + top-p + sample ─────────────────────────────────
-        final_logits = final_logits / temperature
+        final_logits = final_logits / current_temp
 
         probs = F.softmax(final_logits, dim=-1)
         sorted_probs, sorted_indices = torch.sort(probs, descending=True)
@@ -263,16 +291,16 @@ if __name__ == "__main__":
     gen = sub.add_parser("generate")
     gen.add_argument("--epoch", type=int, default=None,
                       help="Checkpoint epoch to load (default: best)")
-    gen.add_argument("--mood", type=str, default="magnificent", choices=Config.MOODS)
+    gen.add_argument("--mood", type=str, default="romantic", choices=Config.MOODS)
     gen.add_argument("--valence", type=float, default=None,
                       help="Continuous valence value to map into a mood")
     gen.add_argument("--arousal", type=float, default=None,
                       help="Continuous arousal value to map into a mood")
-    gen.add_argument("--transition-mood", type=str, default=None, choices=Config.MOODS,
+    gen.add_argument("--transition-mood", type=str, default="funny", choices=Config.MOODS,
                       help="Mood to transition to during generation")
     gen.add_argument("--transition-step", type=int, default=1024,
                       help="Step at which to transition the mood")
-    gen.add_argument("--length", type=int, default=4096)
+    gen.add_argument("--length", type=int, default=8192)
     gen.add_argument("--output", type=str, default="generated_midi.mid")
 
     args = parser.parse_args()

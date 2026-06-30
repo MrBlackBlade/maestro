@@ -324,11 +324,11 @@ if __name__ == "__main__":
     gen.add_argument("--epoch", type=int, default=None,
                       help="Checkpoint epoch to load (default: best)")
     gen.add_argument("--mood", type=str, default="romantic", choices=Config.MOODS)
-    gen.add_argument("--transition-mood", type=str, default="angry", choices=Config.MOODS,
+    gen.add_argument("--transition-mood", type=str, default="funny", choices=Config.MOODS,
                       help="Mood to transition to during generation")
-    gen.add_argument("--transition-step", type=int, default=1024,
+    gen.add_argument("--transition-step", type=int, default=2048,
                       help="Step at which to transition the mood")
-    gen.add_argument("--length", type=int, default=4096)
+    gen.add_argument("--length", type=int, default=8192)
     gen.add_argument("--output", type=str, default="generated_midi.mid")
 
     args = parser.parse_args()
