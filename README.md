@@ -53,6 +53,14 @@
    $ conda env update -f path/to/file.yml --prune
    ```
 
+## Running the Inference Server
+
+To run the inference WebSocket server:
+
+```bash
+uvicorn src.core.inference_ws_server:app --host 127.0.0.1 --port 8000
+```
+
 # Project Architecture
 ## Data setup
 
